@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AeroForge: Custom Import Edition</title>
+    
+    <!-- Core Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- GLTF Loader for Imports -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    
+    <!-- Computer Vision -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        :root {
+            --bg: #050505;
+            --primary: #00f3ff;
+            --accent: #FF9900;
+            --glass: rgba(10, 15, 20, 0.9);
+        }
+
+        body {
+            margin: 0; overflow: hidden; background: var(--bg);
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+            color: white; user-select: none;
+        }
+
+        /* LAYERS */
+        #video-feed {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; transform: scaleX(-1); opacity: 0;
+            transition: opacity 0.5s ease; z-index: 0;
+        }
+        #viewport {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 1; pointer-events: none;
+            background: radial-gradient(circle at center, #1a202c 0%, #000000 100%);
+            transition: background 0.5s;
+        }
+        
+        /* UI OVERLAY */
+        #ui-layer {
+            position: fixed; inset: 0; pointer-events: none; z-index: 10;
+        }
+
+        /* SIDEBAR */
+        .sidebar {
+            position: absolute; left: 0; top: 0; bottom: 0; width: 280px;
+            background: rgba(10, 12, 16, 0.95);
+            border-right: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(20px); pointer-events: auto;
+            padding: 20px; 
+            display: flex; flex-direction: column;
+            overflow-y: auto; /* Added Scroll */
+        }
+
+        /* Custom Scrollbar */
+        .sidebar::-webkit-scrollbar { width: 5px; }
+        .sidebar::-webkit-scrollbar-track { background: #111; }
+        .sidebar::-webkit-scrollbar-thumb { background: var(--primary); border-radius: 5px; }
+
+        .brand {
+            font-size: 1.5rem; font-weight: 800; letter-spacing: 1px;
+            color: white; margin-bottom: 5px;
+            text-shadow: 0 0 15px var(--primary);
+        }
+        .subtitle { font-size: 0.7rem; color: var(--primary); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 30px; }
+
+        .label { font-size: 0.7rem; color: #666; font-weight: bold; text-transform: uppercase; margin-bottom: 8px; margin-top: 15px; }
+
+        .btn {
+            width: 100%; padding: 12px; margin-bottom: 5px;
+            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+            color: #ccc; cursor: pointer; text-align: left; transition: all 0.2s;
+            display: flex; align-items: center; justify-content: space-between;
+            font-size: 0.85rem; border-radius: 4px;
+        }
+        .btn:hover { background: rgba(0, 243, 255, 0.1); color: white; padding-left: 15px; }
+        .btn.active { background: rgba(0, 243, 255, 0.15); border-color: var(--primary); color: var(--primary); }
+
+        /* UPLOAD BUTTON - HIGH VISIBILITY */
+        .btn-upload {
+            background: rgba(255, 153, 0, 0.15); 
+            border: 2px solid var(--accent); 
+            color: var(--accent);
+            text-align: center; justify-content: center; 
+            font-weight: bold; padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 0 10px rgba(255, 153, 0, 0.2);
+        }
+        .btn-upload:hover { 
+            background: var(--accent); 
+            color: #000; 
+            box-shadow: 0 0 20px var(--accent); 
+        }
+
+        /* MODE SWITCH */
+        .mode-toggle {
+            display: flex; gap: 5px; background: rgba(0,0,0,0.5); padding: 5px; border-radius: 4px; margin-bottom: 20px;
+        }
+        .m-btn { flex: 1; padding: 8px; border: none; background: transparent; color: #666; cursor: pointer; font-weight: bold; font-size: 0.8rem; }
+        .m-btn.active { background: var(--primary); color: black; border-radius: 3px; }
+
+        /* HUD BOTTOM */
+        .hud-bar {
+            position: absolute; bottom: 30px; left: 300px; right: 30px;
+            display: flex; justify-content: center; gap: 15px;
+        }
+        .hud-item {
+            background: rgba(0,0,0,0.7); border: 1px solid #333;
+            padding: 8px 15px; border-radius: 30px; display: flex; align-items: center; gap: 8px;
+            color: #888; font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+            transition: all 0.2s; white-space: nowrap;
+        }
+        .hud-item.active { border-color: var(--primary); color: white; box-shadow: 0 0 15px rgba(0,243,255,0.3); transform: scale(1.05); }
+        .icon { font-size: 1.1rem; }
+
+        /* LOADING */
+        #loader {
+            position: fixed; inset: 0; background: #000; z-index: 100;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .bar { width: 200px; height: 3px; background: #333; margin-top: 15px; position: relative; }
+        .fill { position: absolute; left: 0; top: 0; height: 100%; width: 0%; background: var(--primary); animation: load 2s ease-out forwards; }
+        @keyframes load { to { width: 100%; } }
+
+    </style>
+</head>
+<body>
+
+<div id="loader">
+    <div style="font-family: monospace; letter-spacing: 3px; color: var(--primary);">INITIALIZING ENGINE...</div>
+    <div class="bar"><div class="fill"></div></div>
+</div>
+
+<video id="video-feed" playsinline></video>
+<canvas id="viewport"></canvas>
+
+<!-- Hidden File Input -->
+<input type="file" id="file-input" accept=".glb,.gltf" style="display: none;" onchange="handleFileUpload(this)">
+
+<div id="ui-layer">
+    <div class="sidebar">
+        <div class="brand">AERO<span style="color:var(--primary)">FORGE</span></div>
+        <div class="subtitle">Import Edition</div>
+
+        <div class="mode-toggle">
+            <button class="m-btn active" id="mode-studio" onclick="setMode('studio')">STUDIO</button>
+            <button class="m-btn" id="mode-ar" onclick="setMode('ar')">AR CAM</button>
+        </div>
+
+        <!-- NEW: Import Button at Top -->
+        <div class="label">Custom Model</div>
+        <button class="btn btn-upload" onclick="document.getElementById('file-input').click()">
+            <span>📂 IMPORT GLB FILE</span>
+        </button>
+        <div style="font-size: 0.7rem; color: #666; margin-bottom: 20px; line-height: 1.4;">
+            Upload your <b>airplane 3d model.glb</b> to view in AR.
+        </div>
+
+        <div class="label">Procedural Assets</div>
+        <button class="btn active" id="btn-plane" onclick="loadModel('full_plane')">
+            <span>✈️ Commercial Jet</span>
+        </button>
+        <button class="btn" id="btn-turbine" onclick="loadModel('turbine')">
+            <span>⚙️ Turbofan Engine</span>
+        </button>
+        <button class="btn" id="btn-gear" onclick="loadModel('gear')">
+            <span>🛞 Landing Gear</span>
+        </button>
+        <button class="btn" id="btn-cockpit" onclick="loadModel('cockpit')">
+            <span>🕹️ Cockpit Deck</span>
+        </button>
+    </div>
+
+    <div class="hud-bar">
+        <div class="hud-item" id="stat-move">
+            <span class="icon">✌️</span> Peace: Move
+        </div>
+        <div class="hud-item" id="stat-expand">
+            <span class="icon">👍</span> Thumb: Expand
+        </div>
+        <div class="hud-item" id="stat-rotate">
+            <span class="icon">👌</span> Pinch: Rotate
+        </div>
+        <div class="hud-item" id="stat-scale">
+            <span class="icon">👐</span> 2 Hands: Size
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- CONFIGURATION ---
+    const STATE = {
+        mode: 'studio',
+        hand: { x: 0.5, y: 0.5 },
+        gesture: 'IDLE',
+        activeGroup: null,
+        explodeVal: 0,
+        targetExplode: 0,
+        // Scaling State
+        initialDist: 0,
+        initialScale: 1,
+        isCustom: false
+    };
+
+    let scene, camera, renderer, cursorObj, clock;
+    const gltfLoader = new THREE.GLTFLoader();
+
+    // ==========================================
+    // 1. ENGINE SETUP
+    // ==========================================
+    function init() {
+        clock = new THREE.Clock();
+        const canvas = document.getElementById('viewport');
+
+        renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.physicallyCorrectLights = true;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.outputEncoding = THREE.sRGBEncoding;
+
+        scene = new THREE.Scene();
+        
+        camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 100);
+        camera.position.set(0, 2, 8);
+
+        // Cinematic Lighting Rig
+        const amb = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(amb);
+        const sun = new THREE.DirectionalLight(0xffffff, 3);
+        sun.position.set(5, 10, 5);
+        sun.castShadow = true;
+        scene.add(sun);
+        const rim = new THREE.SpotLight(0x00f3ff, 5);
+        rim.position.set(-5, 5, -5);
+        scene.add(rim);
+        const warm = new THREE.PointLight(0xffaa00, 1);
+        warm.position.set(5, -2, 2);
+        scene.add(warm);
+
+        // Studio Grid
+        const grid = new THREE.GridHelper(20, 20, 0x333333, 0x111111);
+        grid.position.y = -2;
+        grid.name = "studio_grid";
+        scene.add(grid);
+
+        createCursor();
+        loadModel('full_plane');
+        animate();
+        window.addEventListener('resize', onResize);
+    }
+
+    function createCursor() {
+        const g = new THREE.Group();
+        const m = new THREE.MeshBasicMaterial({ color: 0x00f3ff, transparent: true, opacity: 0.8 });
+        
+        // Reticle
+        const r1 = new THREE.Mesh(new THREE.RingGeometry(0.04, 0.045, 32), m);
+        const r2 = new THREE.Mesh(new THREE.RingGeometry(0.01, 0.02, 32), new THREE.MeshBasicMaterial({color:0xffffff}));
+        g.add(r1, r2);
+        
+        cursorObj = g;
+        scene.add(g);
+    }
+
+    // ==========================================
+    // 2. CUSTOM IMPORT LOGIC
+    // ==========================================
+
+    window.handleFileUpload = (input) => {
+        const file = input.files[0];
+        if (!file) return;
+
+        // Visual Feedback
+        document.querySelector('.btn-upload span').innerText = "⌛ LOADING...";
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const contents = e.target.result;
+            gltfLoader.parse(contents, '', function(gltf) {
+                if (STATE.activeGroup) scene.remove(STATE.activeGroup);
+                
+                // Reset State
+                STATE.explodeVal = 0;
+                STATE.initialScale = 1;
+                STATE.isCustom = true;
+
+                const model = gltf.scene;
+
+                // 1. Normalize Scale & Center
+                const box = new THREE.Box3().setFromObject(model);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 5.0 / maxDim; // Fit to view
+                
+                model.scale.set(scale, scale, scale);
+                model.position.sub(center.multiplyScalar(scale)); // Center it
+
+                // 2. Auto-Rig for Explosion
+                model.traverse(child => {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                        
+                        // Enhance materials for "Unreal" look
+                        if (child.material) {
+                            child.material.envMapIntensity = 1.2;
+                            child.material.side = THREE.DoubleSide; // Fix invisible faces
+                        }
+
+                        // Calculate Explosion Vector (From Center)
+                        // If the mesh has an offset from 0,0,0, use that vector
+                        const worldPos = new THREE.Vector3();
+                        child.getWorldPosition(worldPos);
+                        const dir = worldPos.clone().normalize();
+                        
+                        // If centered, default to UP
+                        if (dir.length() < 0.1) dir.set(0, 1, 0);
+                        
+                        child.userData.explode = dir;
+                        child.userData.originalPos = child.position.clone();
+                    }
+                });
+
+                STATE.activeGroup = model;
+                scene.add(model);
+                
+                // UI update
+                document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+                document.querySelector('.btn-upload').classList.add('active');
+                document.querySelector('.btn-upload span').innerText = "📂 IMPORT GLB FILE";
+
+            }, (error) => {
+                console.error(error);
+                alert("Error parsing GLB file. Ensure it is a valid binary GLTF.");
+                document.querySelector('.btn-upload span').innerText = "❌ ERROR";
+            });
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    // ==========================================
+    // 3. PROCEDURAL ASSETS
+    // ==========================================
+    
+    const MAT = {
+        white_paint: new THREE.MeshPhysicalMaterial({ color: 0xffffff, metalness: 0.1, roughness: 0.2, clearcoat: 1.0 }),
+        metal_dark: new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.8, roughness: 0.4 }),
+        chrome: new THREE.MeshStandardMaterial({ color: 0xeeeeee, metalness: 1.0, roughness: 0.1 }),
+        glass: new THREE.MeshPhysicalMaterial({ color: 0x88ccff, metalness: 0.1, roughness: 0.0, transmission: 0.6, transparent: true })
+    };
+
+    window.loadModel = (type) => {
+        if(STATE.activeGroup) scene.remove(STATE.activeGroup);
+        STATE.explodeVal = 0;
+        STATE.initialScale = 1;
+        STATE.isCustom = false;
+        
+        // UI Update
+        document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+        document.querySelector('.btn-upload').classList.remove('active');
+        
+        // Identify button
+        if(type === 'full_plane') document.getElementById('btn-plane').classList.add('active');
+        if(type === 'turbine') document.getElementById('btn-turbine').classList.add('active');
+        if(type === 'gear') document.getElementById('btn-gear').classList.add('active');
+        if(type === 'cockpit') document.getElementById('btn-cockpit').classList.add('active');
+
+        const group = new THREE.Group();
+
+        if (type === 'full_plane') {
+            const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.8, 8, 32), MAT.white_paint);
+            fuselage.rotation.z = Math.PI/2; group.add(fuselage);
+
+            const nose = new THREE.Mesh(new THREE.SphereGeometry(0.8, 32, 32, 0, Math.PI*2, 0, Math.PI/2), MAT.white_paint);
+            nose.rotation.z = -Math.PI/2; nose.position.x = 4;
+            nose.userData = { explode: new THREE.Vector3(1,0,0) }; group.add(nose);
+
+            const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.78, 32, 32, 0, Math.PI*2, 0, Math.PI/2.5), MAT.glass);
+            cockpit.rotation.z = -Math.PI/2; cockpit.position.set(3.5, 0.2, 0); cockpit.scale.set(1, 0.8, 1); group.add(cockpit);
+
+            const tailCone = new THREE.Mesh(new THREE.ConeGeometry(0.8, 2, 32), MAT.white_paint);
+            tailCone.rotation.z = Math.PI/2; tailCone.position.x = -5;
+            tailCone.userData = { explode: new THREE.Vector3(-1,0,0) }; group.add(tailCone);
+
+            const wingShape = new THREE.Shape();
+            wingShape.moveTo(0,0); wingShape.lineTo(1.5, 0); wingShape.lineTo(4, -3); wingShape.lineTo(2, -3.5); wingShape.lineTo(0, -1);
+            const wingGeo = new THREE.ExtrudeGeometry(wingShape, {depth: 0.2, bevelEnabled:true, bevelThickness:0.05});
+            
+            const lWing = new THREE.Mesh(wingGeo, MAT.white_paint);
+            lWing.rotation.x = Math.PI/2; lWing.position.set(1, 0, 0);
+            lWing.userData = { explode: new THREE.Vector3(0,0,1) }; group.add(lWing);
+
+            const rWing = lWing.clone();
+            rWing.rotation.x = -Math.PI/2; rWing.scale.y = -1;
+            rWing.userData = { explode: new THREE.Vector3(0,0,-1) }; group.add(rWing);
+
+            const tailGroup = new THREE.Group();
+            const vStabShape = new THREE.Shape();
+            vStabShape.moveTo(0,0); vStabShape.lineTo(1.5,0); vStabShape.lineTo(0.5, 2.5); vStabShape.lineTo(-0.5, 2.5);
+            const vStab = new THREE.Mesh(new THREE.ExtrudeGeometry(vStabShape, {depth:0.2, bevelEnabled:true, bevelThickness:0.02}), MAT.white_paint);
+            vStab.position.set(-0.5, 0.5, -0.1); tailGroup.add(vStab);
+            const hStab = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.1, 4), MAT.white_paint);
+            hStab.position.set(0, 0.5, 0); tailGroup.add(hStab);
+            tailGroup.position.set(-4.5, 0, 0);
+            tailGroup.userData = { explode: new THREE.Vector3(-1, 1, 0) }; group.add(tailGroup);
+
+            const engineGeo = new THREE.CylinderGeometry(0.4, 0.4, 1.2, 32);
+            const engineL = new THREE.Mesh(engineGeo, MAT.metal_dark);
+            engineL.rotation.z = Math.PI/2; engineL.position.set(0.5, -0.5, 1.5);
+            engineL.userData = { explode: new THREE.Vector3(0, -1, 0.5) }; group.add(engineL);
+            const engineR = engineL.clone();
+            engineR.position.set(0.5, -0.5, -1.5);
+            engineR.userData = { explode: new THREE.Vector3(0, -1, -0.5) }; group.add(engineR);
+        }
+        else if (type === 'turbine') {
+            const cowl = new THREE.Mesh(new THREE.CylinderGeometry(2, 1.8, 4, 32, 1, true), MAT.chrome);
+            cowl.rotation.x = Math.PI/2; cowl.material.side = THREE.DoubleSide;
+            cowl.userData = { explode: new THREE.Vector3(0,0,0) }; group.add(cowl);
+
+            const blades = new THREE.Group();
+            for(let i=0; i<16; i++) {
+                const b = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.6, 0.5), MAT.metal_dark);
+                b.position.y = 0.9; b.rotation.y = 0.4;
+                const p = new THREE.Group(); p.rotation.z = (i/16)*Math.PI*2; p.add(b);
+                blades.add(p);
+            }
+            blades.userData = { explode: new THREE.Vector3(0,0,2), spin: true }; group.add(blades);
+
+            const cone = new THREE.Mesh(new THREE.ConeGeometry(0.6, 1.5, 32), MAT.chrome);
+            cone.rotation.x = Math.PI/2; cone.position.z = 0.5;
+            cone.userData = { explode: new THREE.Vector3(0,0,3) }; group.add(cone);
+        }
+        // Fallback placeholders for other types
+        else {
+            const box = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), MAT.chrome);
+            group.add(box);
+        }
+
+        STATE.activeGroup = group;
+        scene.add(group);
+    };
+
+    // ==========================================
+    // 4. GESTURE ENGINE
+    // ==========================================
+
+    function onResults(results) {
+        // --- 1. TWO HAND SCALING ---
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length === 2) {
+            const h1 = results.multiHandLandmarks[0][9];
+            const h2 = results.multiHandLandmarks[1][9];
+            const dist = Math.hypot(h1.x - h2.x, h1.y - h2.y);
+
+            if (STATE.initialDist === 0) {
+                STATE.initialDist = dist;
+                STATE.initialScale = STATE.activeGroup ? STATE.activeGroup.scale.x : 1;
+            } else {
+                const scaleFactor = dist / STATE.initialDist;
+                const newScale = Math.max(0.1, Math.min(8.0, STATE.initialScale * scaleFactor));
+                if (STATE.activeGroup) STATE.activeGroup.scale.set(newScale, newScale, newScale);
+                resetHUD();
+                document.getElementById('stat-scale').classList.add('active');
+            }
+            cursorObj.visible = false;
+            return;
+        } else {
+            STATE.initialDist = 0;
+        }
+
+        // --- 2. SINGLE HAND GESTURES ---
+        if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+            cursorObj.visible = false; resetHUD(); return;
+        }
+        cursorObj.visible = true;
+
+        const lm = results.multiHandLandmarks[0];
+        const rawX = lm[8].x; const rawY = lm[8].y;
+
+        // Smoothing
+        STATE.hand.x += (rawX - STATE.hand.x) * 0.15;
+        STATE.hand.y += (rawY - STATE.hand.y) * 0.15;
+
+        // Cursor
+        const ndcX = (1 - STATE.hand.x) * 2 - 1; 
+        const ndcY = -(STATE.hand.y * 2 - 1);
+        const vec = new THREE.Vector3(ndcX, ndcY, 0.5);
+        vec.unproject(camera);
+        const dir = vec.sub(camera.position).normalize();
+        const pos = camera.position.clone().add(dir.multiplyScalar(5));
+        cursorObj.position.copy(pos);
+        cursorObj.lookAt(camera.position);
+
+        // Detect
+        const pinch = Math.hypot(lm[8].x - lm[4].x, lm[8].y - lm[4].y) < 0.05;
+        const thumbExt = Math.hypot(lm[4].x - lm[5].x, lm[4].y - lm[5].y) > 0.1;
+        const indexUp = lm[8].y < lm[6].y;
+        const midUp = lm[12].y < lm[10].y;
+        const ringDown = lm[16].y > lm[14].y;
+
+        resetHUD();
+
+        if (STATE.activeGroup) {
+            // Expand
+            if (thumbExt && !pinch && indexUp && midUp) {
+                document.getElementById('stat-expand').classList.add('active');
+                STATE.targetExplode = 1.0;
+                cursorObj.children[0].material.color.setHex(0xFF9900);
+            } else {
+                STATE.targetExplode = 0;
+            }
+
+            // Move
+            if (!pinch && indexUp && midUp && ringDown) {
+                document.getElementById('stat-move').classList.add('active');
+                STATE.activeGroup.position.x = ndcX * 4;
+                STATE.activeGroup.position.y = ndcY * 4;
+                cursorObj.children[0].material.color.setHex(0x00FF00);
+            }
+            // Rotate
+            else if (pinch) {
+                document.getElementById('stat-rotate').classList.add('active');
+                STATE.activeGroup.rotation.y = (STATE.hand.x - 0.5) * 5;
+                STATE.activeGroup.rotation.x = (STATE.hand.y - 0.5) * 5;
+                cursorObj.children[0].material.color.setHex(0xFF00FF);
+            }
+            else {
+                cursorObj.children[0].material.color.setHex(0x00f3ff);
+            }
+        }
+    }
+
+    function resetHUD() {
+        document.querySelectorAll('.hud-item').forEach(el => el.classList.remove('active'));
+    }
+
+    // ==========================================
+    // 5. ANIMATION
+    // ==========================================
+
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        if (STATE.activeGroup) {
+            STATE.explodeVal += (STATE.targetExplode - STATE.explodeVal) * 0.1;
+            
+            STATE.activeGroup.traverse(child => {
+                // Procedural Movement
+                if (child.userData.explode && !STATE.isCustom) {
+                    const target = child.userData.explode.clone().multiplyScalar(STATE.explodeVal * 2);
+                    child.position.lerp(target, 0.1);
+                }
+                
+                // Custom Import Movement (Based on original Pos)
+                if (STATE.isCustom && child.userData.explode && child.userData.originalPos) {
+                    const expansion = child.userData.explode.clone().multiplyScalar(STATE.explodeVal * 1.5);
+                    const target = child.userData.originalPos.clone().add(expansion);
+                    child.position.lerp(target, 0.1);
+                }
+
+                if (child.userData.spin) child.rotation.z -= 0.1;
+            });
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    function onResize() {
+        camera.aspect = window.innerWidth/window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    window.setMode = (m) => {
+        const v = document.getElementById('video-feed');
+        const vp = document.getElementById('viewport');
+        const grid = scene.getObjectByName("studio_grid");
+        
+        document.querySelectorAll('.m-btn').forEach(b => b.classList.remove('active'));
+        document.getElementById(`mode-${m}`).classList.add('active');
+
+        if(m === 'ar') {
+            v.style.opacity = 1; vp.style.background = 'none';
+            if(grid) grid.visible = false;
+        } else {
+            v.style.opacity = 0; vp.style.background = 'radial-gradient(circle at center, #1a202c 0%, #000000 100%)';
+            if(grid) grid.visible = true;
+        }
+    }
+
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.65, minTrackingConfidence: 0.65});
+    hands.onResults(onResults);
+
+    const cam = new Camera(document.getElementById('video-feed'), {
+        onFrame: async () => await hands.send({image: document.getElementById('video-feed')}),
+        width: 1280, height: 720
+    });
+    
+    cam.start().then(() => {
+        document.getElementById('loader').style.display = 'none';
+        init();
+    });
+
+</script>
+</body>
+</html>

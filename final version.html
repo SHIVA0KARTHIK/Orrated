@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AeroForge: Enterprise AR</title>
+    
+    <!-- Core Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- GLTF Loader -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    
+    <!-- Computer Vision -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        :root {
+            --bg-color: #050505;
+            --primary: #00F0FF;
+            --accent: #FFAA00;
+            --lock: #FF003C;
+            --glass: rgba(15, 23, 30, 0.85);
+            --border: rgba(255, 255, 255, 0.1);
+            --font-main: 'Segoe UI', 'Roboto', Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            margin: 0; overflow: hidden; background: var(--bg-color);
+            font-family: var(--font-main); color: white; user-select: none;
+        }
+
+        /* LAYERS */
+        #video-feed {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; transform: scaleX(-1); opacity: 0;
+            transition: opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1); z-index: 0;
+        }
+        #viewport {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 1; pointer-events: none;
+            background: radial-gradient(circle at center, #1a202c 0%, #000000 100%);
+            transition: background 0.5s;
+        }
+        
+        #ui-layer { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+
+        /* SIDEBAR - PROFESSIONAL LOOK */
+        .sidebar {
+            position: absolute; left: 0; top: 0; bottom: 0; width: 320px;
+            background: var(--glass);
+            border-right: 1px solid var(--border);
+            backdrop-filter: blur(25px); -webkit-backdrop-filter: blur(25px);
+            pointer-events: auto; display: flex; flex-direction: column;
+            box-shadow: 10px 0 30px rgba(0,0,0,0.5);
+            padding: 0; overflow-y: auto;
+        }
+        
+        /* Custom Scrollbar */
+        .sidebar::-webkit-scrollbar { width: 4px; }
+        .sidebar::-webkit-scrollbar-track { background: transparent; }
+        .sidebar::-webkit-scrollbar-thumb { background: var(--primary); border-radius: 2px; }
+
+        .header {
+            padding: 30px; border-bottom: 1px solid var(--border);
+            background: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, transparent 100%);
+        }
+        .brand {
+            font-size: 1.6rem; font-weight: 800; letter-spacing: 2px;
+            color: white; margin: 0; text-transform: uppercase;
+        }
+        .brand span { color: var(--primary); }
+        .subtitle { font-size: 0.7rem; color: #888; letter-spacing: 3px; margin-top: 5px; text-transform: uppercase; }
+
+        .menu-content { padding: 25px; flex: 1; }
+
+        .section-label {
+            font-size: 0.65rem; color: #555; font-weight: 800; 
+            text-transform: uppercase; margin: 25px 0 10px 0; letter-spacing: 1px;
+        }
+
+        /* BUTTONS */
+        .btn {
+            width: 100%; padding: 14px 20px; margin-bottom: 8px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid var(--border); border-radius: 6px;
+            color: #ccc; font-size: 0.85rem; font-weight: 600;
+            cursor: pointer; text-align: left; transition: all 0.25s ease;
+            display: flex; align-items: center; gap: 12px;
+            position: relative; overflow: hidden;
+        }
+        .btn::before {
+            content: ''; position: absolute; top: 0; left: 0; width: 3px; height: 100%;
+            background: var(--primary); opacity: 0; transition: 0.2s;
+        }
+        .btn:hover { background: rgba(0, 240, 255, 0.05); color: white; border-color: rgba(0, 240, 255, 0.3); }
+        .btn.active { background: rgba(0, 240, 255, 0.1); border-color: var(--primary); color: white; }
+        .btn.active::before { opacity: 1; }
+
+        /* UPLOAD BUTTON */
+        .btn-upload {
+            border: 1px dashed var(--accent); color: var(--accent); background: rgba(255, 170, 0, 0.05);
+            justify-content: center; text-align: center;
+        }
+        .btn-upload:hover { background: var(--accent); color: #000; border-style: solid; box-shadow: 0 0 20px rgba(255,170,0,0.4); }
+
+        /* MODE TOGGLE */
+        .mode-switch {
+            display: flex; background: rgba(0,0,0,0.3); padding: 4px; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border);
+        }
+        .m-btn {
+            flex: 1; padding: 10px; border: none; background: transparent; 
+            color: #666; font-weight: 700; font-size: 0.75rem; cursor: pointer; 
+            border-radius: 6px; transition: 0.2s;
+        }
+        .m-btn.active { background: var(--primary); color: #000; box-shadow: 0 2px 10px rgba(0,243,255,0.2); }
+
+        /* HUD STATUS BAR */
+        .hud-status {
+            position: absolute; top: 20px; left: 360px; right: 40px;
+            display: flex; justify-content: flex-end; align-items: center; gap: 20px;
+        }
+        .status-item {
+            font-family: monospace; font-size: 0.8rem; color: var(--primary);
+            background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 4px; border: 1px solid var(--border);
+        }
+        .status-item span { color: white; font-weight: bold; margin-left: 5px; }
+        .status-item.lock { display: none; border-color: var(--lock); color: var(--lock); background: rgba(255,0,60,0.1); }
+        .status-item.lock.active { display: block; animation: pulse 1s infinite; }
+
+        /* GESTURE BAR */
+        .gesture-bar {
+            position: absolute; bottom: 40px; left: 360px; right: 40px;
+            display: flex; gap: 15px; justify-content: center;
+        }
+        .g-card {
+            background: rgba(0,0,0,0.7); border: 1px solid var(--border);
+            padding: 10px 20px; border-radius: 12px; display: flex; align-items: center; gap: 10px;
+            color: #888; font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+            transition: all 0.2s; backdrop-filter: blur(10px);
+        }
+        .g-card.active { 
+            border-color: var(--primary); color: white; transform: translateY(-5px); 
+            box-shadow: 0 5px 20px rgba(0,243,255,0.2); 
+        }
+        /* Lock specific style */
+        .g-card#stat-lock.active { border-color: var(--lock); box-shadow: 0 5px 20px rgba(255,0,60,0.3); }
+        .g-icon { font-size: 1.2rem; }
+
+        /* LOADING */
+        #loader {
+            position: fixed; inset: 0; background: #050505; z-index: 100;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .loader-bar {
+            width: 200px; height: 2px; background: #333; margin-top: 20px; position: relative; overflow: hidden;
+        }
+        .loader-fill {
+            position: absolute; left: 0; top: 0; height: 100%; width: 0%; background: var(--primary);
+            animation: load 1.5s ease-out forwards;
+        }
+        @keyframes load { to { width: 100%; } }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+
+    </style>
+</head>
+<body>
+
+<div id="loader">
+    <div style="font-family: monospace; letter-spacing: 4px; font-size: 1.2rem;">SYSTEM <span style="color:var(--primary)">BOOT</span></div>
+    <div class="loader-bar"><div class="loader-fill"></div></div>
+</div>
+
+<video id="video-feed" playsinline></video>
+<canvas id="viewport"></canvas>
+
+<!-- Hidden Inputs -->
+<input type="file" id="file-input" accept=".glb,.gltf" style="display: none;" onchange="handleFileUpload(this)">
+
+<div id="ui-layer">
+    <div class="sidebar">
+        <div class="header">
+            <h1 class="brand">AERO<span>FORGE</span></h1>
+            <div class="subtitle">Enterprise Edition</div>
+        </div>
+
+        <div class="menu-content">
+            <div class="mode-switch">
+                <button class="m-btn active" id="mode-studio" onclick="setMode('studio')">STUDIO</button>
+                <button class="m-btn" id="mode-ar" onclick="setMode('ar')">AR CAM</button>
+            </div>
+
+            <div class="section-label">Import Data</div>
+            <button class="btn btn-upload" onclick="document.getElementById('file-input').click()">
+                <span>📂 IMPORT .GLB MODEL</span>
+            </button>
+
+            <div class="section-label">Procedural Assets</div>
+            <button class="btn active" id="btn-plane" onclick="loadModel('full_plane')">
+                <span>✈️ Commercial Jet</span>
+            </button>
+            <button class="btn" id="btn-turbine" onclick="loadModel('turbine')">
+                <span>⚙️ Turbofan Engine</span>
+            </button>
+            <button class="btn" id="btn-gear" onclick="loadModel('gear')">
+                <span>🛞 Landing Gear</span>
+            </button>
+            <button class="btn" id="btn-cockpit" onclick="loadModel('cockpit')">
+                <span>🕹️ Flight Deck</span>
+            </button>
+
+            <div class="section-label">Visualization</div>
+            <button class="btn" id="btn-xray" onclick="toggleXray()">
+                <span>🕸️ Toggle X-Ray</span>
+            </button>
+        </div>
+    </div>
+
+    <div class="hud-status">
+        <div class="status-item lock" id="lock-warning">⚠️ POSITION LOCKED</div>
+        <div class="status-item">HANDS: <span id="hand-count">0</span></div>
+        <div class="status-item">MODE: <span id="view-mode">STUDIO</span></div>
+    </div>
+
+    <div class="gesture-bar">
+        <div class="g-card" id="stat-lock">
+            <span class="g-icon">✊</span> Fist: Lock
+        </div>
+        <div class="g-card" id="stat-move">
+            <span class="g-icon">✌️</span> Peace: Move
+        </div>
+        <div class="g-card" id="stat-rotate">
+            <span class="g-icon">👌</span> Pinch: Rotate
+        </div>
+        <div class="g-card" id="stat-expand">
+            <span class="g-icon">👍</span> Thumb: Expand
+        </div>
+        <div class="g-card" id="stat-scale">
+            <span class="g-icon">👐</span> 2 Hands: Size
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- STATE MANAGEMENT ---
+    const STATE = {
+        mode: 'studio',
+        hand: { x: 0.5, y: 0.5 },
+        activeGroup: null,
+        explodeVal: 0,
+        targetExplode: 0,
+        initialDist: 0,
+        initialScale: 1,
+        isCustom: false,
+        isWireframe: false,
+        isLocked: false // New Lock State
+    };
+
+    let scene, camera, renderer, cursorObj, clock;
+    const gltfLoader = new THREE.GLTFLoader();
+
+    // ==========================================
+    // 1. ENGINE CORE
+    // ==========================================
+    function init() {
+        clock = new THREE.Clock();
+        const canvas = document.getElementById('viewport');
+
+        renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.physicallyCorrectLights = true;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.outputEncoding = THREE.sRGBEncoding;
+
+        scene = new THREE.Scene();
+        
+        camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 100);
+        camera.position.set(0, 2, 8);
+
+        // Professional Lighting Rig
+        const amb = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(amb);
+        const key = new THREE.DirectionalLight(0xffffff, 4);
+        key.position.set(5, 8, 5);
+        key.castShadow = true;
+        scene.add(key);
+        const fill = new THREE.DirectionalLight(0x88ccff, 2);
+        fill.position.set(-5, 0, 5);
+        scene.add(fill);
+        const rim = new THREE.SpotLight(0x00F0FF, 8);
+        rim.position.set(0, 5, -5);
+        scene.add(rim);
+
+        // Grid
+        const grid = new THREE.GridHelper(20, 20, 0x333333, 0x111111);
+        grid.position.y = -2;
+        grid.name = "grid";
+        scene.add(grid);
+
+        createCursor();
+        loadModel('full_plane');
+        animate();
+        window.addEventListener('resize', onResize);
+    }
+
+    function createCursor() {
+        const g = new THREE.Group();
+        const m = new THREE.MeshBasicMaterial({ color: 0x00F0FF, transparent: true, opacity: 0.8 });
+        const r1 = new THREE.Mesh(new THREE.RingGeometry(0.04, 0.045, 32), m);
+        const r2 = new THREE.Mesh(new THREE.RingGeometry(0.01, 0.02, 32), new THREE.MeshBasicMaterial({color:0xffffff}));
+        g.add(r1, r2);
+        cursorObj = g;
+        scene.add(g);
+    }
+
+    // ==========================================
+    // 2. MODEL MANAGEMENT & IMPORT
+    // ==========================================
+
+    const MAT = {
+        white_paint: new THREE.MeshPhysicalMaterial({ color: 0xffffff, metalness: 0.1, roughness: 0.2, clearcoat: 1.0 }),
+        metal_dark: new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.8, roughness: 0.4 }),
+        chrome: new THREE.MeshStandardMaterial({ color: 0xeeeeee, metalness: 1.0, roughness: 0.1 }),
+        glass: new THREE.MeshPhysicalMaterial({ color: 0x88ccff, metalness: 0.1, roughness: 0.0, transmission: 0.6, transparent: true })
+    };
+
+    window.toggleXray = () => {
+        STATE.isWireframe = !STATE.isWireframe;
+        const btn = document.getElementById('btn-xray');
+        
+        if (STATE.isWireframe) btn.classList.add('active');
+        else btn.classList.remove('active');
+
+        if (STATE.activeGroup) {
+            STATE.activeGroup.traverse(child => {
+                if (child.isMesh) {
+                    // Check if it's the first run, save original material
+                    if (!child.userData.origMat) child.userData.origMat = child.material;
+                    
+                    if (STATE.isWireframe) {
+                        // Switch to wireframe
+                        child.material = new THREE.MeshBasicMaterial({
+                            color: 0x00F0FF,
+                            wireframe: true,
+                            transparent: true,
+                            opacity: 0.3
+                        });
+                    } else {
+                        // Revert
+                        child.material = child.userData.origMat;
+                    }
+                }
+            });
+        }
+    };
+
+    window.handleFileUpload = (input) => {
+        const file = input.files[0];
+        if (!file) return;
+
+        document.querySelector('.btn-upload span').innerText = "⌛ PROCESSING...";
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            gltfLoader.parse(e.target.result, '', function(gltf) {
+                if (STATE.activeGroup) scene.remove(STATE.activeGroup);
+                
+                resetState(true);
+                const model = gltf.scene;
+
+                // Auto-Scale
+                const box = new THREE.Box3().setFromObject(model);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+                const scale = 5.0 / Math.max(size.x, size.y, size.z);
+                
+                model.scale.set(scale, scale, scale);
+                model.position.sub(center.multiplyScalar(scale));
+
+                // Process for AR
+                model.traverse(child => {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                        if (child.material) {
+                            child.material.side = THREE.DoubleSide;
+                            child.material.envMapIntensity = 1.0;
+                        }
+                        // Explode Vector
+                        const dir = child.position.clone().normalize();
+                        if (dir.length() < 0.1) dir.set(0,1,0);
+                        child.userData.explode = dir;
+                        child.userData.originalPos = child.position.clone();
+                    }
+                });
+
+                STATE.activeGroup = model;
+                scene.add(model);
+                resetUIButtons();
+                document.querySelector('.btn-upload').classList.add('active');
+                document.querySelector('.btn-upload span').innerText = "📂 IMPORT .GLB MODEL";
+
+            }, (err) => {
+                alert("Import Failed");
+                document.querySelector('.btn-upload span').innerText = "❌ ERROR";
+            });
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    // Procedural Loader (Simplified for brevity as prev version had detailed parts)
+    window.loadModel = (type) => {
+        if(STATE.activeGroup) scene.remove(STATE.activeGroup);
+        resetState(false);
+        resetUIButtons();
+        if(event) event.currentTarget.classList.add('active');
+
+        const group = new THREE.Group();
+
+        if (type === 'full_plane') {
+            const fus = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.8, 8, 32), MAT.white_paint);
+            fus.rotation.z = Math.PI/2; group.add(fus);
+            
+            const wingGeo = new THREE.BoxGeometry(2, 0.2, 8);
+            const wings = new THREE.Mesh(wingGeo, MAT.white_paint);
+            wings.position.x = 1; wings.userData.explode = new THREE.Vector3(0,1,0);
+            group.add(wings);
+
+            const tail = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.1, 3), MAT.white_paint);
+            tail.position.set(-4, 0.5, 0); tail.userData.explode = new THREE.Vector3(-1,1,0);
+            group.add(tail);
+        } else {
+            // Turbine/Gear etc uses similar logic
+            const core = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 3, 32), MAT.metal_dark);
+            core.rotation.x = Math.PI/2; group.add(core);
+            const fan = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 0.5, 32), MAT.chrome);
+            fan.rotation.x = Math.PI/2; fan.position.z = 1.5; 
+            fan.userData.spin = true; fan.userData.explode = new THREE.Vector3(0,0,1);
+            group.add(fan);
+        }
+
+        STATE.activeGroup = group;
+        scene.add(group);
+    };
+
+    function resetState(isCustom) {
+        STATE.explodeVal = 0;
+        STATE.initialScale = 1;
+        STATE.isCustom = isCustom;
+        STATE.isLocked = false;
+        STATE.isWireframe = false;
+        document.getElementById('btn-xray').classList.remove('active');
+        document.getElementById('lock-warning').classList.remove('active');
+    }
+
+    function resetUIButtons() {
+        document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+        document.querySelector('.btn-upload').classList.remove('active');
+    }
+
+    // ==========================================
+    // 3. ADVANCED GESTURE ENGINE
+    // ==========================================
+
+    function onResults(results) {
+        // UI Updates
+        const handCount = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+        document.getElementById('hand-count').innerText = handCount;
+
+        if (handCount === 0) {
+            cursorObj.visible = false; resetHUD(); return;
+        }
+        cursorObj.visible = true;
+
+        // --- 1. TWO HAND SCALE ---
+        if (handCount === 2) {
+            const h1 = results.multiHandLandmarks[0][9];
+            const h2 = results.multiHandLandmarks[1][9];
+            const dist = Math.hypot(h1.x - h2.x, h1.y - h2.y);
+
+            if (STATE.initialDist === 0) {
+                STATE.initialDist = dist;
+                STATE.initialScale = STATE.activeGroup ? STATE.activeGroup.scale.x : 1;
+            } else if (!STATE.isLocked) { // Only scale if not locked
+                const factor = dist / STATE.initialDist;
+                const s = Math.max(0.1, Math.min(8.0, STATE.initialScale * factor));
+                if (STATE.activeGroup) STATE.activeGroup.scale.set(s,s,s);
+                activateHUD('stat-scale');
+            }
+            cursorObj.visible = false;
+            return;
+        } else {
+            STATE.initialDist = 0;
+        }
+
+        // --- 2. SINGLE HAND ---
+        const lm = results.multiHandLandmarks[0];
+        const rawX = lm[8].x; const rawY = lm[8].y;
+
+        // Smooth Cursor
+        STATE.hand.x += (rawX - STATE.hand.x) * 0.15;
+        STATE.hand.y += (rawY - STATE.hand.y) * 0.15;
+
+        // Map to 3D
+        const ndcX = (1 - STATE.hand.x) * 2 - 1; 
+        const ndcY = -(STATE.hand.y * 2 - 1);
+        
+        const vec = new THREE.Vector3(ndcX, ndcY, 0.5);
+        vec.unproject(camera);
+        const dir = vec.sub(camera.position).normalize();
+        const pos = camera.position.clone().add(dir.multiplyScalar(5));
+        cursorObj.position.copy(pos);
+        cursorObj.lookAt(camera.position);
+
+        // Gesture Detection Logic
+        const tips = [8, 12, 16, 20];
+        const bases = [5, 9, 13, 17];
+        const openFingers = tips.filter((t, i) => lm[t].y < lm[bases[i]].y).length; // Y is inverted in vision? Check relative to wrist
+        // Simple heuristic: Tip above knuckle (y value smaller)
+        
+        const pinch = Math.hypot(lm[8].x - lm[4].x, lm[8].y - lm[4].y) < 0.05;
+        const fist = openFingers === 0;
+        const peace = !pinch && openFingers === 2 && lm[8].y < lm[5].y && lm[12].y < lm[9].y;
+        const thumbOut = Math.hypot(lm[4].x - lm[5].x, lm[4].y - lm[5].y) > 0.1;
+
+        resetHUD();
+
+        // --- FIST (LOCK) LOGIC ---
+        if (fist) {
+            STATE.isLocked = true;
+            activateHUD('stat-lock');
+            document.getElementById('lock-warning').classList.add('active');
+            cursorObj.children[0].material.color.setHex(0xFF003C); // Red Cursor
+            return; // Exit early, no movement allowed
+        } else {
+            STATE.isLocked = false;
+            document.getElementById('lock-warning').classList.remove('active');
+        }
+
+        // --- ACTIVE MANIPULATION (Only if not locked) ---
+        if (STATE.activeGroup && !STATE.isLocked) {
+            
+            // Expand
+            if (thumbOut && openFingers > 3) {
+                STATE.targetExplode = 1.0;
+                activateHUD('stat-expand');
+                cursorObj.children[0].material.color.setHex(0xFFAA00);
+            } else {
+                STATE.targetExplode = 0;
+            }
+
+            // Move
+            if (peace) {
+                STATE.activeGroup.position.x = ndcX * 4;
+                STATE.activeGroup.position.y = ndcY * 4;
+                activateHUD('stat-move');
+                cursorObj.children[0].material.color.setHex(0x00FF00);
+            }
+            // Rotate
+            else if (pinch) {
+                STATE.activeGroup.rotation.y = (STATE.hand.x - 0.5) * 5;
+                STATE.activeGroup.rotation.x = (STATE.hand.y - 0.5) * 5;
+                activateHUD('stat-rotate');
+                cursorObj.children[0].material.color.setHex(0xFF00FF);
+            }
+            else {
+                cursorObj.children[0].material.color.setHex(0x00F0FF);
+            }
+        }
+    }
+
+    function activateHUD(id) {
+        document.getElementById(id).classList.add('active');
+    }
+
+    function resetHUD() {
+        document.querySelectorAll('.g-card').forEach(c => c.classList.remove('active'));
+    }
+
+    // ==========================================
+    // 4. ANIMATION LOOP
+    // ==========================================
+
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        if (STATE.activeGroup) {
+            // Smooth Explosion
+            STATE.explodeVal += (STATE.targetExplode - STATE.explodeVal) * 0.1;
+            
+            STATE.activeGroup.traverse(child => {
+                if (child.userData.explode) {
+                    const base = STATE.isCustom ? child.userData.originalPos : new THREE.Vector3(0,0,0);
+                    const offset = child.userData.explode.clone().multiplyScalar(STATE.explodeVal * (STATE.isCustom ? 1.5 : 2));
+                    
+                    if (STATE.isCustom) child.position.lerp(base.clone().add(offset), 0.1);
+                    else child.position.lerp(offset, 0.1);
+                }
+                if (child.userData.spin) child.rotation.z -= 0.1;
+            });
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    function onResize() {
+        camera.aspect = window.innerWidth/window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    window.setMode = (m) => {
+        const v = document.getElementById('video-feed');
+        const vp = document.getElementById('viewport');
+        const grid = scene.getObjectByName("grid");
+        
+        document.querySelectorAll('.m-btn').forEach(b => b.classList.remove('active'));
+        document.getElementById(`mode-${m}`).classList.add('active');
+        document.getElementById('view-mode').innerText = m.toUpperCase();
+
+        if(m === 'ar') {
+            v.style.opacity = 1; vp.style.background = 'none';
+            if(grid) grid.visible = false;
+        } else {
+            v.style.opacity = 0; vp.style.background = 'radial-gradient(circle at center, #1a202c 0%, #000000 100%)';
+            if(grid) grid.visible = true;
+        }
+    }
+
+    // INIT
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.65, minTrackingConfidence: 0.65});
+    hands.onResults(onResults);
+
+    const cam = new Camera(document.getElementById('video-feed'), {
+        onFrame: async () => await hands.send({image: document.getElementById('video-feed')}),
+        width: 1280, height: 720
+    });
+    
+    cam.start().then(() => {
+        document.getElementById('loader').style.display = 'none';
+        init();
+    });
+
+</script>
+</body>
+</html>

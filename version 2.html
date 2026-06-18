@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bio-Mech AR Studio Pro</title>
+    
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        :root {
+            --glass: rgba(10, 10, 15, 0.75);
+            --border: 1px solid rgba(255, 255, 255, 0.15);
+            --accent: #00e5ff;
+            --heart: #ff0040;
+            --text-main: #ffffff;
+            --text-dim: #a0a0b0;
+        }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #050505;
+            color: var(--text-main);
+        }
+
+        /* --- Layers --- */
+        #video-bg {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; transform: scaleX(-1); opacity: 0;
+            transition: opacity 0.5s ease; z-index: 0;
+        }
+        canvas#main-canvas {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 1;
+        }
+        /* Hand Skeleton Overlay (Hidden in AR) */
+        canvas#debug-canvas {
+            position: fixed; bottom: 20px; right: 20px;
+            width: 200px; height: 150px;
+            z-index: 5; border-radius: 12px;
+            background: rgba(0,0,0,0.5); border: var(--border);
+            transform: scaleX(-1);
+            pointer-events: none;
+        }
+
+        /* --- UI --- */
+        #ui-layer {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 10;
+        }
+
+        .sidebar {
+            position: absolute; left: 20px; top: 50%; transform: translateY(-50%);
+            width: 260px; background: var(--glass);
+            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border: var(--border); border-radius: 16px; padding: 20px;
+            pointer-events: auto;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            transition: transform 0.3s ease;
+        }
+
+        .header { margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; }
+        h1 { margin: 0; font-size: 1.2rem; font-weight: 700; letter-spacing: 1px; color: var(--accent); }
+        h2 { margin: 5px 0 0 0; font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; }
+
+        .control-group { margin-bottom: 20px; }
+        .label { font-size: 0.7rem; color: var(--text-dim); margin-bottom: 8px; display: block; font-weight: 600; letter-spacing: 0.5px; }
+
+        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .btn {
+            background: rgba(255,255,255,0.05); border: var(--border);
+            color: var(--text-dim); padding: 10px; border-radius: 8px;
+            cursor: pointer; font-size: 0.8rem; transition: 0.2s;
+            display: flex; align-items: center; justify-content: center; gap: 5px;
+        }
+        .btn:hover { background: rgba(255,255,255,0.1); color: white; }
+        .btn.active { background: rgba(0, 229, 255, 0.15); border-color: var(--accent); color: var(--accent); }
+        .btn.active-red { background: rgba(255, 0, 64, 0.15); border-color: var(--heart); color: var(--heart); }
+
+        /* Status Pill */
+        .status-pill {
+            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+            background: var(--glass); padding: 8px 16px; border-radius: 30px;
+            border: var(--border); font-size: 0.85rem; display: flex; align-items: center; gap: 10px;
+        }
+        .icon { font-size: 1.1rem; }
+        
+        /* Loading */
+        #loader {
+            position: fixed; inset: 0; background: #000; z-index: 100;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .spinner { width: 40px; height: 40px; border: 3px solid #333; border-top-color: var(--accent); border-radius: 50%; animation: spin 1s infinite linear; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Gesture Icons */
+        .gesture-legend {
+            margin-top: 15px; font-size: 0.7rem; color: #888; display: grid; grid-template-columns: 1fr; gap: 5px;
+        }
+        .g-item { display: flex; align-items: center; gap: 8px; }
+    </style>
+</head>
+<body>
+
+<div id="loader">
+    <div class="spinner"></div>
+    <div style="margin-top: 15px; font-family: monospace; color: var(--accent);">INITIALIZING AI...</div>
+</div>
+
+<video id="video-bg" playsinline></video>
+<canvas id="main-canvas"></canvas>
+<canvas id="debug-canvas"></canvas>
+
+<div id="ui-layer">
+    <div class="status-pill" id="status-display">
+        <span class="icon" id="status-icon">✋</span>
+        <span id="status-text">System Ready</span>
+    </div>
+
+    <div class="sidebar">
+        <div class="header">
+            <h1>BioMech AR</h1>
+            <h2>Gesture Control Interface</h2>
+        </div>
+
+        <div class="control-group">
+            <span class="label">MODE</span>
+            <div class="btn-grid">
+                <button class="btn active" id="btn-studio" onclick="setMode('studio')">Studio</button>
+                <button class="btn" id="btn-ar" onclick="setMode('ar')">AR Cam</button>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <span class="label">MODELS</span>
+            <div class="btn-grid">
+                <button class="btn" onclick="loadModel('heart')">❤️ Heart</button>
+                <button class="btn" onclick="loadModel('engine')">⚙️ Engine</button>
+                <button class="btn" onclick="loadModel('car')">🏎️ Car</button>
+                <button class="btn" onclick="toggleWireframe()">🕸️ X-Ray</button>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <span class="label">GESTURE GUIDE</span>
+            <div class="gesture-legend">
+                <div class="g-item"><span>☝️</span> Index: <b>Point & Select</b></div>
+                <div class="g-item"><span>✌️</span> Peace: <b>Move / Drag</b></div>
+                <div class="g-item"><span>👌</span> Pinch: <b>Rotate</b></div>
+                <div class="g-item"><span>✊</span> Fist: <b>Deselect</b></div>
+                <div class="g-item"><span>👐</span> Two Hands: <b>Zoom</b></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- APP CONFIGURATION ---
+    const config = {
+        zoomSpeed: 0.1,
+        rotateSpeed: 2.5,
+        moveSpeed: 3.5,
+        selectionThreshold: 0.05 // How close pointer needs to be
+    };
+
+    const state = {
+        mode: 'studio',
+        gesture: 'IDLE', // IDLE, POINT, PEACE, PINCH, FIST, ZOOM
+        selectedObject: null,
+        isWireframe: false,
+        
+        // Hand Tracking Data
+        handPos: { x: 0, y: 0 }, // Normalized 0-1
+        prevHandPos: { x: 0, y: 0 },
+        initialPinchDist: 0,
+        baseScale: 1
+    };
+
+    // --- ELEMENTS ---
+    const videoElement = document.getElementById('video-bg');
+    const canvasElement = document.getElementById('main-canvas');
+    const debugCanvas = document.getElementById('debug-canvas');
+    const debugCtx = debugCanvas.getContext('2d');
+    const statusText = document.getElementById('status-text');
+    const statusIcon = document.getElementById('status-icon');
+
+    // --- THREE.JS GLOBALS ---
+    let scene, camera, renderer, raycaster, mouse;
+    let currentModelGroup = null;
+    let cursorMesh; // Visual dot for finger
+
+    // --- INITIALIZATION ---
+    function init() {
+        // Scene
+        scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.02);
+
+        // Camera
+        camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 0, 5);
+
+        // Renderer
+        renderer = new THREE.WebGLRenderer({ canvas: canvasElement, alpha: true, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+
+        // Raycaster
+        raycaster = new THREE.Raycaster();
+        mouse = new THREE.Vector2();
+
+        // Lights
+        const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambient);
+        
+        const mainLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        mainLight.position.set(5, 10, 7);
+        mainLight.castShadow = true;
+        scene.add(mainLight);
+
+        const fillLight = new THREE.PointLight(0x00e5ff, 0.5);
+        fillLight.position.set(-5, 0, 5);
+        scene.add(fillLight);
+
+        // Cursor (The finger tip dot)
+        cursorMesh = new THREE.Mesh(
+            new THREE.RingGeometry(0.05, 0.08, 32),
+            new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.8, side: THREE.DoubleSide })
+        );
+        cursorMesh.visible = false;
+        scene.add(cursorMesh);
+
+        // Input Listeners (Mouse Fallback)
+        window.addEventListener('resize', onResize);
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mousedown', onMouseDown);
+        window.addEventListener('mouseup', onMouseUp);
+
+        // Start
+        loadModel('heart');
+        animate();
+    }
+
+    // --- MOUSE INPUT (Fallback) ---
+    let isMouseDown = false;
+    function onMouseMove(event) {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        
+        if(isMouseDown && state.selectedObject && state.gesture === 'IDLE') {
+            // Mouse rotate fallback
+            state.selectedObject.rotation.y += event.movementX * 0.01;
+            state.selectedObject.rotation.x += event.movementY * 0.01;
+        }
+    }
+    function onMouseDown() { isMouseDown = true; checkSelection(); }
+    function onMouseUp() { isMouseDown = false; }
+
+    // --- MODE SWITCHING ---
+    window.setMode = (mode) => {
+        state.mode = mode;
+        const btnStudio = document.getElementById('btn-studio');
+        const btnAr = document.getElementById('btn-ar');
+
+        if(mode === 'ar') {
+            videoElement.style.opacity = 1;
+            scene.fog = null;
+            debugCanvas.style.display = 'none'; // Hide debug skeleton in AR
+            btnStudio.classList.remove('active');
+            btnAr.classList.add('active');
+        } else {
+            videoElement.style.opacity = 0;
+            scene.fog = new THREE.FogExp2(0x050505, 0.02);
+            debugCanvas.style.display = 'block';
+            btnAr.classList.remove('active');
+            btnStudio.classList.add('active');
+        }
+    };
+
+    window.toggleWireframe = () => {
+        state.isWireframe = !state.isWireframe;
+        if(currentModelGroup) {
+            currentModelGroup.traverse(c => {
+                if(c.isMesh) c.material.wireframe = state.isWireframe;
+            });
+        }
+    };
+
+    // --- PROCEDURAL MODELS ---
+    window.loadModel = (type) => {
+        if(currentModelGroup) scene.remove(currentModelGroup);
+        state.selectedObject = null;
+
+        const group = new THREE.Group();
+        
+        // Materials
+        const matHeart = new THREE.MeshPhongMaterial({ 
+            color: 0xaa0022, specular: 0x550000, shininess: 80, 
+            wireframe: state.isWireframe 
+        });
+        const matMetal = new THREE.MeshStandardMaterial({ 
+            color: 0x8899aa, roughness: 0.3, metalness: 0.8, 
+            wireframe: state.isWireframe 
+        });
+        const matRubber = new THREE.MeshStandardMaterial({ 
+            color: 0x111111, roughness: 0.9, metalness: 0.1 
+        });
+
+        if(type === 'heart') {
+            // --- ADVANCED HEART MODEL ---
+            // Merging simple geometries to create a complex organic shape
+            
+            // Left Ventricle (The main pump) - Elongated Sphere
+            const lvGeo = new THREE.SphereGeometry(1, 40, 40);
+            lvGeo.scale(0.9, 1.4, 0.9);
+            const lv = new THREE.Mesh(lvGeo, matHeart);
+            lv.position.set(-0.4, -0.5, 0);
+            lv.rotation.z = -0.3;
+            group.add(lv);
+
+            // Right Ventricle - Smaller, wrapped around
+            const rvGeo = new THREE.SphereGeometry(1, 40, 40);
+            rvGeo.scale(0.8, 1.2, 0.8);
+            const rv = new THREE.Mesh(rvGeo, matHeart);
+            rv.position.set(0.5, -0.3, 0.3);
+            rv.rotation.z = 0.3;
+            group.add(rv);
+
+            // Atria (Top chambers)
+            const la = new THREE.Mesh(new THREE.SphereGeometry(0.7, 32, 32), matHeart);
+            la.position.set(-0.5, 0.8, -0.2);
+            group.add(la);
+
+            const ra = new THREE.Mesh(new THREE.SphereGeometry(0.75, 32, 32), matHeart);
+            ra.position.set(0.5, 0.8, 0.2);
+            group.add(ra);
+
+            // Aorta (The big arch)
+            const path = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(0, 1, 0),
+                new THREE.Vector3(0, 1.8, 0),
+                new THREE.Vector3(-0.5, 2, 0),
+                new THREE.Vector3(-1, 1.5, 0)
+            ]);
+            const aorta = new THREE.Mesh(new THREE.TubeGeometry(path, 20, 0.35, 16, false), matHeart);
+            group.add(aorta);
+
+            // Pulmonary Artery
+            const pPath = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(0.3, 0.5, 0.5),
+                new THREE.Vector3(0, 1.5, 0.2),
+                new THREE.Vector3(0.8, 1.8, 0)
+            ]);
+            const pulm = new THREE.Mesh(new THREE.TubeGeometry(pPath, 20, 0.3, 16, false), matHeart);
+            group.add(pulm);
+
+            group.userData.type = 'heart';
+
+        } else if (type === 'engine') {
+            // --- V6 ENGINE ---
+            const block = new THREE.Mesh(new THREE.BoxGeometry(2, 1.5, 3), matMetal);
+            group.add(block);
+            
+            // Cylinders
+            for(let i=0; i<3; i++) {
+                const c1 = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 1, 16), matMetal);
+                c1.position.set(-0.8, 1, i-1);
+                c1.rotation.z = 0.5;
+                group.add(c1);
+                
+                const c2 = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 1, 16), matMetal);
+                c2.position.set(0.8, 1, i-1);
+                c2.rotation.z = -0.5;
+                group.add(c2);
+            }
+            group.userData.type = 'mech';
+
+        } else if (type === 'car') {
+            // --- CHASSIS ---
+            const chassis = new THREE.Mesh(new THREE.BoxGeometry(2, 0.5, 4), matMetal);
+            group.add(chassis);
+            
+            // Wheels
+            const wGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.4, 32);
+            wGeo.rotateZ(Math.PI/2);
+            const pos = [[1.2, 1.2], [-1.2, 1.2], [1.2, -1.2], [-1.2, -1.2]];
+            pos.forEach(p => {
+                const w = new THREE.Mesh(wGeo, matRubber);
+                w.position.set(p[0], 0, p[1]);
+                group.add(w);
+            });
+            group.userData.type = 'mech';
+        }
+
+        currentModelGroup = group;
+        scene.add(group);
+        // Auto-select the loaded model
+        state.selectedObject = currentModelGroup;
+    };
+
+    // --- GESTURE LOGIC CORE ---
+
+    function getGesture(landmarks) {
+        // Finger indices: Thumb(4), Index(8), Middle(12), Ring(16), Pinky(20)
+        // Knuckles: 2, 5, 9, 13, 17
+        
+        const isFingerOpen = (tipIdx, pipIdx) => {
+            // Simple distance check from wrist(0)
+            return Math.hypot(landmarks[tipIdx].x - landmarks[0].x, landmarks[tipIdx].y - landmarks[0].y) >
+                   Math.hypot(landmarks[pipIdx].x - landmarks[0].x, landmarks[pipIdx].y - landmarks[0].y);
+        };
+
+        const indexOpen = isFingerOpen(8, 6);
+        const middleOpen = isFingerOpen(12, 10);
+        const ringOpen = isFingerOpen(16, 14);
+        const pinkyOpen = isFingerOpen(20, 18);
+        const thumbOpen = isFingerOpen(4, 2);
+
+        // Calculate Pinch Distance (Thumb Tip to Index Tip)
+        const pinchDist = Math.hypot(landmarks[8].x - landmarks[4].x, landmarks[8].y - landmarks[4].y);
+
+        // 1. FIST (All fingers closed)
+        if (!indexOpen && !middleOpen && !ringOpen && !pinkyOpen) return 'FIST';
+
+        // 2. PINCH (Index close to thumb)
+        if (pinchDist < 0.05) return 'PINCH';
+
+        // 3. PEACE (Index & Middle Open, others closed)
+        if (indexOpen && middleOpen && !ringOpen && !pinkyOpen) return 'PEACE';
+
+        // 4. POINT (Index Open, others closed)
+        if (indexOpen && !middleOpen && !ringOpen && !pinkyOpen) return 'POINT';
+
+        return 'OPEN';
+    }
+
+    function onResults(results) {
+        debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+        
+        // Draw Skeleton (Debug)
+        if(state.mode === 'studio') {
+            debugCtx.drawImage(results.image, 0, 0, debugCanvas.width, debugCanvas.height);
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    drawConnectors(debugCtx, landmarks, HAND_CONNECTIONS, {color: '#00e5ff', lineWidth: 2});
+                }
+            }
+        }
+
+        if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+            state.gesture = 'IDLE';
+            updateStatus('Waiting for Hand', '✋');
+            cursorMesh.visible = false;
+            return;
+        }
+
+        const landmarks = results.multiHandLandmarks[0];
+        const newGesture = getGesture(landmarks);
+        state.gesture = newGesture;
+
+        // Position tracking (Index Finger Tip)
+        const indexTip = landmarks[8];
+        const rawX = 1 - indexTip.x; // Mirroring
+        const rawY = indexTip.y;
+        
+        // Smoothing
+        state.handPos.x += (rawX - state.handPos.x) * 0.2;
+        state.handPos.y += (rawY - state.handPos.y) * 0.2;
+
+        // --- GESTURE ACTIONS ---
+
+        // 1. ZOOM (Two hands)
+        if (results.multiHandLandmarks.length === 2) {
+            updateStatus('Zooming', '👐');
+            const h1 = results.multiHandLandmarks[0][9];
+            const h2 = results.multiHandLandmarks[1][9];
+            const dist = Math.hypot(h1.x - h2.x, h1.y - h2.y);
+            
+            if (state.initialPinchDist === 0) {
+                state.initialPinchDist = dist;
+                state.baseScale = currentModelGroup ? currentModelGroup.scale.x : 1;
+            } else {
+                const scale = Math.max(0.5, Math.min(4, state.baseScale * (dist / state.initialPinchDist)));
+                if(currentModelGroup) currentModelGroup.scale.set(scale, scale, scale);
+            }
+            return;
+        } else {
+            state.initialPinchDist = 0;
+        }
+
+        // 2. FIST: Deselect
+        if (state.gesture === 'FIST') {
+            state.selectedObject = null;
+            updateStatus('Deselected', '✊');
+            highlightObject(null);
+        }
+
+        // 3. POINT: Move Cursor & Select
+        else if (state.gesture === 'POINT') {
+            updateStatus('Pointing / Selecting', '☝️');
+            updateCursorPosition();
+            checkSelection(); // Raycast check
+        }
+
+        // 4. PEACE: Move Object
+        else if (state.gesture === 'PEACE' && state.selectedObject) {
+            updateStatus('Moving Object', '✌️');
+            // Calculate delta
+            const dx = (state.handPos.x - state.prevHandPos.x) * config.moveSpeed * 3;
+            const dy = (state.handPos.y - state.prevHandPos.y) * config.moveSpeed * 3;
+            
+            state.selectedObject.position.x += dx;
+            state.selectedObject.position.y -= dy; // Invert Y
+        }
+
+        // 5. PINCH: Rotate Object
+        else if (state.gesture === 'PINCH' && state.selectedObject) {
+            updateStatus('Rotating Object', '👌');
+            const dx = (state.handPos.x - state.prevHandPos.x) * config.rotateSpeed;
+            const dy = (state.handPos.y - state.prevHandPos.y) * config.rotateSpeed;
+            
+            state.selectedObject.rotation.y += dx;
+            state.selectedObject.rotation.x += dy;
+        }
+
+        state.prevHandPos = { x: state.handPos.x, y: state.handPos.y };
+    }
+
+    // --- RAYCASTING & SELECTION ---
+
+    function updateCursorPosition() {
+        // Convert normalized hand coords (0..1) to clip space (-1..1)
+        mouse.x = (state.handPos.x * 2) - 1;
+        mouse.y = -(state.handPos.y * 2) + 1;
+
+        // Visual Cursor in 3D space (projected approx)
+        const vec = new THREE.Vector3(mouse.x, mouse.y, 0.5);
+        vec.unproject(camera);
+        const dir = vec.sub(camera.position).normalize();
+        const distance = 4; // Arbitrary distance in front of camera
+        const pos = camera.position.clone().add(dir.multiplyScalar(distance));
+        
+        cursorMesh.position.copy(pos);
+        cursorMesh.lookAt(camera.position);
+        cursorMesh.visible = true;
+    }
+
+    function checkSelection() {
+        if (!currentModelGroup) return;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(currentModelGroup.children);
+
+        if (intersects.length > 0) {
+            // Hit!
+            cursorMesh.material.color.setHex(0x00ff00);
+            // Auto-select if pointing
+            if(state.gesture === 'POINT' || isMouseDown) {
+                state.selectedObject = currentModelGroup;
+                highlightObject(currentModelGroup);
+            }
+        } else {
+            cursorMesh.material.color.setHex(0x00e5ff);
+        }
+    }
+
+    function highlightObject(obj) {
+        if(!obj) {
+            // Reset colors
+            if(currentModelGroup) {
+                currentModelGroup.traverse(c => {
+                    if(c.isMesh) c.material.emissive.setHex(0x000000);
+                });
+            }
+            return;
+        }
+
+        // Add glow to selected
+        obj.traverse(c => {
+            if(c.isMesh) c.material.emissive.setHex(0x222222);
+        });
+    }
+
+    function updateStatus(text, icon) {
+        statusText.innerText = text;
+        statusIcon.innerText = icon;
+    }
+
+    // --- ANIMATION ---
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        const time = Date.now() * 0.001;
+
+        // Real Heart Beat Animation
+        if (currentModelGroup && currentModelGroup.userData.type === 'heart') {
+            // Heartbeat Logic: Systole (Contract) -> Diastole (Relax)
+            // Pattern: Pump... Pump... Pause.
+            const t = time * 5; 
+            const k = Math.exp(-4 * ((t % 4) - 0.5)**2) + Math.exp(-4 * ((t % 4) - 1.2)**2);
+            const scale = 1 + k * 0.08;
+            
+            // Only scale if not manually zooming
+            if(state.gesture !== 'ZOOM') {
+                 // Interpolate back to base scale * heartbeat
+                 const currentScale = currentModelGroup.scale.x; 
+                 // We don't want to override user zoom, so we apply pulse as a modifier
+                 // For simplicity in this demo, we just pulsate slightly around current scale
+            }
+            
+            // Pulsate geometry slightly
+            currentModelGroup.children.forEach(mesh => {
+                if(mesh.geometry.type === 'SphereGeometry') {
+                   // subtle scale
+                   mesh.scale.setScalar(scale);
+                }
+            });
+        }
+
+        // Engine Vibration
+        if (currentModelGroup && currentModelGroup.userData.type === 'mech') {
+            if(state.gesture !== 'PEACE') {
+                currentModelGroup.position.y += Math.sin(time * 50) * 0.002;
+            }
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    function onResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // --- SETUP MEDIA PIPE ---
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+    });
+
+    hands.onResults(onResults);
+
+    const cameraUtils = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 1280,
+        height: 720
+    });
+
+    cameraUtils.start().then(() => {
+        document.getElementById('loader').style.display = 'none';
+        init();
+    });
+
+</script>
+</body>
+</html>

@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BioMech Ultimate: Surgical AR</title>
+    
+    <!-- Core Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        :root {
+            --bg: #000000;
+            --primary: #00f3ff;
+            --alert: #ff003c;
+            --glass: rgba(10, 15, 20, 0.85);
+        }
+
+        body {
+            margin: 0; overflow: hidden; background: var(--bg);
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+            color: white; user-select: none;
+        }
+
+        /* LAYERS */
+        #video-feed {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; transform: scaleX(-1); opacity: 0;
+            transition: opacity 0.8s ease; z-index: 0;
+        }
+        #ar-canvas {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 1; pointer-events: none;
+        }
+        
+        /* UI OVERLAY */
+        #ui-layer {
+            position: fixed; inset: 0; pointer-events: none; z-index: 10;
+        }
+
+        /* SIDEBAR */
+        .sidebar {
+            position: absolute; top: 50%; left: 0; transform: translateY(-50%);
+            width: 300px; padding: 25px;
+            background: linear-gradient(90deg, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.4) 100%);
+            border-left: 4px solid var(--primary);
+            pointer-events: auto;
+            backdrop-filter: blur(10px);
+        }
+
+        .brand {
+            font-size: 2rem; font-weight: 800; color: white;
+            letter-spacing: -1px; margin-bottom: 5px;
+            text-shadow: 0 0 20px var(--primary);
+        }
+        .subtitle { font-size: 0.8rem; color: var(--primary); text-transform: uppercase; letter-spacing: 2px; margin-bottom: 30px; }
+
+        .category {
+            font-size: 0.7rem; color: #666; font-weight: bold;
+            margin-top: 20px; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px;
+        }
+
+        .btn {
+            width: 100%; padding: 14px 20px; margin-bottom: 6px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: #ccc; font-size: 0.9rem; font-weight: 500;
+            cursor: pointer; text-align: left; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex; align-items: center; justify-content: space-between;
+            border-radius: 4px;
+        }
+        .btn:hover { background: rgba(0, 243, 255, 0.1); border-color: var(--primary); color: white; padding-left: 25px; }
+        .btn.active { background: rgba(0, 243, 255, 0.15); border-color: var(--primary); color: var(--primary); box-shadow: 0 0 15px rgba(0, 243, 255, 0.2); }
+        
+        /* SPECIAL MEDICAL BUTTONS */
+        .btn.medical:hover { border-color: var(--alert); background: rgba(255, 0, 60, 0.1); box-shadow: 0 0 10px rgba(255, 0, 60, 0.2); }
+        .btn.medical.active { border-color: var(--alert); color: var(--alert); background: rgba(255, 0, 60, 0.15); box-shadow: 0 0 20px rgba(255, 0, 60, 0.3); }
+
+        /* HUD ELEMENTS */
+        .scan-grid {
+            position: absolute; inset: 0; 
+            background: 
+                linear-gradient(rgba(0, 243, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 243, 255, 0.05) 1px, transparent 1px);
+            background-size: 100px 100px;
+            opacity: 0.5;
+        }
+
+        .status-panel {
+            position: absolute; top: 30px; right: 30px;
+            text-align: right;
+        }
+        .stat-row { font-family: 'Courier New', monospace; font-size: 0.85rem; color: var(--primary); margin-bottom: 4px; text-shadow: 0 0 5px rgba(0,243,255,0.5); }
+        .stat-val { color: white; font-weight: bold; }
+
+        /* LOADING SCREEN */
+        #loader {
+            position: fixed; inset: 0; background: #000; z-index: 100;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .dna-loader {
+            width: 60px; height: 60px; border: 4px solid rgba(255,255,255,0.1);
+            border-top-color: var(--primary); border-bottom-color: var(--alert);
+            border-radius: 50%; animation: spin 1s infinite linear;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* GESTURE LEGEND */
+        .legend {
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 30px; background: rgba(0,0,0,0.7);
+            padding: 12px 30px; border-radius: 30px; border: 1px solid #333;
+            backdrop-filter: blur(5px);
+        }
+        .l-item { display: flex; align-items: center; gap: 10px; color: #bbb; font-size: 0.8rem; font-weight: 600; }
+        .l-icon { font-size: 1.2rem; }
+
+    </style>
+</head>
+<body>
+
+<div id="loader">
+    <div class="dna-loader"></div>
+    <div style="margin-top: 20px; font-family: monospace; color: #666; letter-spacing: 2px;">LOADING BIOMECH ENGINE...</div>
+</div>
+
+<video id="video-feed" playsinline></video>
+<canvas id="ar-canvas"></canvas>
+
+<div id="ui-layer">
+    <div class="scan-grid"></div>
+    
+    <div class="status-panel">
+        <div class="stat-row">SYS.STATUS: <span class="stat-val" style="color:#0f0">ONLINE</span></div>
+        <div class="stat-row">TRACKING: <span class="stat-val" id="track-stat">SEARCHING...</span></div>
+        <div class="stat-row">STABILITY: <span class="stat-val">98.4%</span></div>
+    </div>
+
+    <div class="sidebar">
+        <div class="brand">BioMech</div>
+        <div class="subtitle">Ultimate AR Studio</div>
+
+        <div style="display:flex; gap:10px; margin-bottom:30px;">
+            <button class="btn active" id="mode-studio" onclick="setMode('studio')" style="justify-content:center;">STUDIO</button>
+            <button class="btn" id="mode-ar" onclick="setMode('ar')" style="justify-content:center;">AR CAM</button>
+        </div>
+
+        <div class="category">Biological Systems</div>
+        <button class="btn medical active" onclick="loadModel('heart')">
+            <span>🫀 Realistic Heart</span>
+            <span style="font-size:0.7rem; opacity:0.6">LIVE</span>
+        </button>
+        <button class="btn medical" onclick="loadModel('brain')">
+            <span>🧠 Cerebral Cortex</span>
+        </button>
+
+        <div class="category">Advanced Robotics</div>
+        <button class="btn" onclick="loadModel('jet')">
+            <span>✈️ Jet Turbine</span>
+            <span style="font-size:0.7rem; opacity:0.6">RPM</span>
+        </button>
+        <button class="btn" onclick="loadModel('arm')">
+            <span>🦾 Cyber Arm</span>
+        </button>
+
+        <div class="category">Analysis Tools</div>
+        <button class="btn" onclick="toggleWireframe()">
+            <span>🕸️ X-Ray Scan</span>
+            <span id="xray-status" style="font-size:0.7rem; color:var(--primary)">OFF</span>
+        </button>
+    </div>
+
+    <div class="legend">
+        <div class="l-item"><span class="l-icon">☝️</span> POINT</div>
+        <div class="l-item"><span class="l-icon">✌️</span> MOVE</div>
+        <div class="l-item"><span class="l-icon">👌</span> ROTATE</div>
+        <div class="l-item"><span class="l-icon">✊</span> RELEASE</div>
+        <div class="l-item"><span class="l-icon">👐</span> ZOOM</div>
+    </div>
+</div>
+
+<script>
+    // ==========================================
+    // 🧠 CUSTOM SHADER ENGINE (The Realism Logic)
+    // ==========================================
+    
+    // This shader generates organic muscle fiber texture, veins, and wetness mathematically
+    // No external image files needed!
+    const ORGANIC_VERTEX_SHADER = `
+        varying vec2 vUv;
+        varying vec3 vNormal;
+        varying vec3 vViewPosition;
+        varying float vDisplacement;
+        
+        uniform float time;
+        uniform float pulseStrength;
+
+        // Noise functions for organic displacement
+        vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+        vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+        float snoise(vec3 v) {
+            const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
+            const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+            vec3 i  = floor(v + dot(v, C.yyy) );
+            vec3 x0 = v - i + dot(i, C.xxx) ;
+            vec3 g = step(x0.yzx, x0.xyz);
+            vec3 l = 1.0 - g;
+            vec3 i1 = min( g.xyz, l.zxy );
+            vec3 i2 = max( g.xyz, l.zxy );
+            vec3 x1 = x0 - i1 + C.xxx;
+            vec3 x2 = x0 - i2 + C.yyy;
+            vec3 x3 = x0 - D.yyy;
+            i = mod289(i);
+            vec4 p = permute( permute( permute(
+                        i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
+                    + i.y + vec4(0.0, i1.y, i2.y, 1.0 ))
+                    + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+            float n_ = 0.142857142857;
+            vec3  ns = n_ * D.wyz - D.xzx;
+            vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+            vec4 x_ = floor(j * ns.z);
+            vec4 y_ = floor(j - 7.0 * x_ );
+            vec4 x = x_ *ns.x + ns.yyyy;
+            vec4 y = y_ *ns.x + ns.yyyy;
+            vec4 h = 1.0 - abs(x) - abs(y);
+            vec4 b0 = vec4( x.xy, y.xy );
+            vec4 b1 = vec4( x.zw, y.zw );
+            vec4 s0 = floor(b0)*2.0 + 1.0;
+            vec4 s1 = floor(b1)*2.0 + 1.0;
+            vec4 sh = -step(h, vec4(0.0));
+            vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+            vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+            vec3 p0 = vec3(a0.xy,h.x);
+            vec3 p1 = vec3(a0.zw,h.y);
+            vec3 p2 = vec3(a1.xy,h.z);
+            vec3 p3 = vec3(a1.zw,h.w);
+            vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+            p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+            vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+            m = m * m;
+            return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
+        }
+
+        void main() {
+            vUv = uv;
+            vNormal = normalize(normalMatrix * normal);
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            vViewPosition = -mvPosition.xyz;
+
+            // Heartbeat Physics
+            float pulse = sin(time * 6.0) * 0.05; // Base pulse
+            float thud = exp(-3.0 * mod(time * 3.0, 1.0)); // Sharp "thud"
+            float displacement = pulse + (thud * 0.1 * pulseStrength);
+            
+            // Texture Displacement (Lumpy Surface)
+            float noise = snoise(position * 3.0);
+            vDisplacement = noise;
+            
+            vec3 newPos = position + normal * (displacement + noise * 0.02);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(newPos, 1.0);
+        }
+    `;
+
+    const ORGANIC_FRAGMENT_SHADER = `
+        uniform vec3 colorA; // Deep Red
+        uniform vec3 colorB; // Fatty/Vein color
+        
+        varying vec2 vUv;
+        varying vec3 vNormal;
+        varying vec3 vViewPosition;
+        varying float vDisplacement;
+
+        void main() {
+            vec3 normal = normalize(vNormal);
+            vec3 viewDir = normalize(vViewPosition);
+
+            // 1. Muscle Fiber Texture (High frequency noise simulation)
+            float fiber = sin(vUv.y * 200.0 + vDisplacement * 10.0) * 0.5 + 0.5;
+            
+            // 2. Base Color Mixing
+            // Mix dark red and lighter fatty tissue based on noise
+            vec3 finalColor = mix(colorA, colorB, smoothstep(0.0, 0.6, vDisplacement + fiber * 0.2));
+
+            // 3. Wet Specular Highlight (The "Shiny" Look)
+            vec3 halfDir = normalize(viewDir + vec3(0.0, 1.0, 1.0)); // Fake light dir
+            float spec = pow(max(dot(normal, halfDir), 0.0), 32.0);
+            
+            // 4. Fresnel (Rim Lighting - Wet Edge)
+            float fresnel = pow(1.0 - dot(viewDir, normal), 3.0);
+            
+            // Combine
+            finalColor += vec3(1.0) * spec * 0.6; // Wet shine
+            finalColor += vec3(0.5, 0.0, 0.0) * fresnel; // Subsurface glow
+            
+            gl_FragColor = vec4(finalColor, 1.0);
+        }
+    `;
+
+    // ==========================================
+    // SYSTEM CONFIGURATION
+    // ==========================================
+    
+    const STATE = {
+        mode: 'studio',
+        hand: { x: 0.5, y: 0.5 },
+        cursor: { x: 0, y: 0 }, // Smoothed cursor
+        gesture: 'IDLE',
+        selectedObj: null,
+        wireframe: false,
+        pinchStart: 0,
+        baseScale: 1
+    };
+
+    const CONFIG = {
+        stabilization: 0.08, // Very low value = High Smoothing (Heavy feel)
+        moveSpeed: 6.0,
+        rotateSpeed: 4.0
+    };
+
+    let scene, camera, renderer, raycaster, clock;
+    let currentModel = null;
+    let cursorObj = null;
+    let heartUniforms = null;
+
+    // ==========================================
+    // INITIALIZATION
+    // ==========================================
+
+    function init() {
+        clock = new THREE.Clock();
+        
+        // Scene Setup
+        scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000000, 0.025);
+
+        // Camera
+        camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 0, 5);
+
+        // Renderer
+        renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('ar-canvas'), alpha: true, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.outputEncoding = THREE.sRGBEncoding;
+
+        // Lighting (Dramatic Studio)
+        const ambient = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambient);
+        
+        const mainLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        mainLight.position.set(5, 5, 5);
+        scene.add(mainLight);
+
+        const rimLight = new THREE.SpotLight(0x00f3ff, 2);
+        rimLight.position.set(-5, 0, 2);
+        scene.add(rimLight);
+
+        // Setup Pointer
+        createSciFiCursor();
+        
+        // Start
+        raycaster = new THREE.Raycaster();
+        loadModel('heart');
+        animate();
+        
+        window.addEventListener('resize', onResize);
+    }
+
+    function createSciFiCursor() {
+        const group = new THREE.Group();
+        
+        // Inner Ring
+        const r1 = new THREE.Mesh(
+            new THREE.RingGeometry(0.02, 0.03, 32),
+            new THREE.MeshBasicMaterial({ color: 0x00f3ff, transparent: true, opacity: 0.8, side: THREE.DoubleSide })
+        );
+        
+        // Outer Bracket
+        const r2 = new THREE.Mesh(
+            new THREE.RingGeometry(0.05, 0.055, 4, 1, 0, Math.PI/2),
+            new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide })
+        );
+        const r3 = r2.clone();
+        r3.rotation.z = Math.PI;
+
+        group.add(r1, r2, r3);
+        cursorObj = group;
+        scene.add(cursorObj);
+    }
+
+    // ==========================================
+    // MODEL LOADER
+    // ==========================================
+
+    window.loadModel = (type) => {
+        if(currentModel) scene.remove(currentModel);
+        STATE.selectedObj = null;
+        
+        // Reset Buttons
+        document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+        // (Simple active state logic omitted for brevity, handled by UI clicks usually)
+
+        const group = new THREE.Group();
+
+        if (type === 'heart') {
+            // --- THE REALISTIC HEART BUILDER ---
+            heartUniforms = {
+                time: { value: 0 },
+                pulseStrength: { value: 1.0 },
+                colorA: { value: new THREE.Color(0x660000) }, // Dark Blood
+                colorB: { value: new THREE.Color(0xffaaaa) }  // Fatty Tissue
+            };
+
+            const mat = new THREE.ShaderMaterial({
+                vertexShader: ORGANIC_VERTEX_SHADER,
+                fragmentShader: ORGANIC_FRAGMENT_SHADER,
+                uniforms: heartUniforms,
+                wireframe: STATE.wireframe
+            });
+
+            // 1. Ventricles (Main Body) - Distorted Sphere
+            const geoMain = new THREE.SphereGeometry(1, 128, 128);
+            // Non-uniform scale to shape it like a heart
+            geoMain.scale(0.9, 1.3, 0.8); 
+            const heartBody = new THREE.Mesh(geoMain, mat);
+            heartBody.rotation.z = -0.2;
+            group.add(heartBody);
+
+            // 2. Atria (Top Chambers)
+            const atriaGeo = new THREE.SphereGeometry(0.6, 64, 64);
+            const leftAtrium = new THREE.Mesh(atriaGeo, mat);
+            leftAtrium.position.set(-0.6, 0.9, 0);
+            group.add(leftAtrium);
+            
+            const rightAtrium = new THREE.Mesh(atriaGeo, mat);
+            rightAtrium.position.set(0.5, 0.9, 0.2);
+            group.add(rightAtrium);
+
+            // 3. Aorta Arch (Using Tube Geometry)
+            class CustomSinCurve extends THREE.Curve {
+                getPoint(t) {
+                    const tx = Math.cos(t * Math.PI) - 0.5;
+                    const ty = Math.sin(t * Math.PI) + 1.0;
+                    const tz = 0;
+                    return new THREE.Vector3(tx, ty, tz).multiplyScalar(1);
+                }
+            }
+            const path = new CustomSinCurve();
+            const tubeGeo = new THREE.TubeGeometry(path, 20, 0.35, 16, false);
+            const aorta = new THREE.Mesh(tubeGeo, mat);
+            group.add(aorta);
+
+            // 4. Veins (Vena Cava) - Standard Material for contrast
+            const veinMat = new THREE.MeshStandardMaterial({
+                color: 0x330000, roughness: 0.2, metalness: 0.1
+            });
+            const vein = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 2.5), veinMat);
+            vein.position.set(0.6, 0.5, -0.4);
+            vein.rotation.x = 0.5;
+            group.add(vein);
+
+            group.userData.type = 'organic';
+
+        } 
+        else if (type === 'jet') {
+            // Jet Turbine
+            const silver = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.9, roughness: 0.2, wireframe: STATE.wireframe });
+            const dark = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.6, roughness: 0.6, wireframe: STATE.wireframe });
+
+            // Cowling
+            const cowl = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.2, 3, 32, 1, true), silver);
+            cowl.rotation.x = Math.PI/2;
+            cowl.material.side = THREE.DoubleSide;
+            group.add(cowl);
+
+            // Fan
+            const fanGroup = new THREE.Group();
+            for(let i=0; i<16; i++) {
+                const blade = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.3, 0.4), dark);
+                blade.position.y = 0.7;
+                blade.rotation.y = 0.4;
+                const pivot = new THREE.Group();
+                pivot.rotation.z = (i/16) * Math.PI * 2;
+                pivot.add(blade);
+                fanGroup.add(pivot);
+            }
+            fanGroup.position.z = 1.2;
+            group.add(fanGroup);
+            group.userData.spinner = fanGroup;
+
+            // Cone
+            const cone = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1, 32), silver);
+            cone.rotation.x = Math.PI/2;
+            cone.position.z = 1.4;
+            group.add(cone);
+        }
+        else if (type === 'arm') {
+            // Robotic Arm
+            const mat = new THREE.MeshStandardMaterial({color: 0xffffff, metalness: 0.5, roughness: 0.5, wireframe: STATE.wireframe});
+            const jointMat = new THREE.MeshStandardMaterial({color: 0x333333, metalness: 0.8});
+
+            const base = new THREE.Mesh(new THREE.CylinderGeometry(1, 1.2, 0.5, 32), mat);
+            group.add(base);
+
+            const limb1 = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2, 0.5), mat);
+            limb1.position.y = 1.25;
+            group.add(limb1);
+
+            const joint = new THREE.Mesh(new THREE.SphereGeometry(0.6), jointMat);
+            joint.position.y = 2.4;
+            group.add(joint);
+
+            const limb2 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.5, 0.4), mat);
+            limb2.position.y = 3.2;
+            limb2.rotation.z = 0.5;
+            group.add(limb2);
+        }
+
+        currentModel = group;
+        scene.add(group);
+        STATE.selectedObj = group;
+    };
+
+    window.toggleWireframe = () => {
+        STATE.wireframe = !STATE.wireframe;
+        document.getElementById('xray-status').innerText = STATE.wireframe ? "ON" : "OFF";
+        if(currentModel) {
+            currentModel.traverse(child => {
+                if(child.isMesh) {
+                    child.material.wireframe = STATE.wireframe;
+                }
+            });
+        }
+    };
+
+    // ==========================================
+    // ✋ TRACKING LOGIC (Anti-Jitter)
+    // ==========================================
+
+    function getGesture(landmarks) {
+        // Simple geometry checks
+        const isOpen = (i, b) => {
+            const tip = landmarks[i]; const base = landmarks[b]; const wrist = landmarks[0];
+            return Math.hypot(tip.x - wrist.x, tip.y - wrist.y) > Math.hypot(base.x - wrist.x, base.y - wrist.y);
+        };
+        
+        const i = isOpen(8, 5);
+        const m = isOpen(12, 9);
+        const r = isOpen(16, 13);
+        const p = isOpen(20, 17);
+        
+        // Pinch calc
+        const dx = landmarks[8].x - landmarks[4].x;
+        const dy = landmarks[8].y - landmarks[4].y;
+        const pinch = Math.hypot(dx, dy) < 0.05;
+
+        if(!i && !m && !r && !p) return 'FIST';
+        if(pinch) return 'PINCH';
+        if(i && m && !r && !p) return 'PEACE';
+        if(i && !m && !r && !p) return 'POINT';
+        return 'OPEN';
+    }
+
+    function onResults(results) {
+        const stat = document.getElementById('track-stat');
+
+        if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+            stat.innerText = "SEARCHING..."; stat.style.color = "red";
+            cursorObj.visible = false;
+            return;
+        }
+
+        stat.innerText = "LOCKED"; stat.style.color = "#0f0";
+        cursorObj.visible = true;
+
+        const lm = results.multiHandLandmarks[0];
+        const rawX = lm[8].x; // Index Tip
+        const rawY = lm[8].y;
+
+        // ADAPTIVE SMOOTHING (The "Heavy" Feel)
+        // If movement is small, smooth A LOT (removes jitter). If large, move fast.
+        const dist = Math.hypot(rawX - STATE.hand.x, rawY - STATE.hand.y);
+        const dynamicSmooth = dist > 0.05 ? 0.3 : CONFIG.stabilization;
+
+        STATE.hand.x += (rawX - STATE.hand.x) * dynamicSmooth;
+        STATE.hand.y += (rawY - STATE.hand.y) * dynamicSmooth;
+
+        // Gesture
+        STATE.gesture = getGesture(lm);
+
+        // Map to 3D
+        updateCursorPosition();
+
+        // Actions
+        if(STATE.gesture === 'FIST') {
+            STATE.selectedObj = null;
+            highlight(null);
+        }
+        else if(STATE.gesture === 'POINT') {
+            checkIntersection();
+        }
+        else if(STATE.gesture === 'PEACE' && STATE.selectedObj) {
+            // Drag
+            const screenDX = STATE.hand.x - lm[8].x; // Hacky delta
+            // Actually better to use accumulating deltas in a real app, 
+            // but for single file:
+            STATE.selectedObj.position.x = (0.5 - STATE.hand.x) * 8;
+            STATE.selectedObj.position.y = (0.5 - STATE.hand.y) * 8;
+        }
+        else if(STATE.gesture === 'PINCH' && STATE.selectedObj) {
+            // Rotate
+            STATE.selectedObj.rotation.y = (STATE.hand.x * 5);
+            STATE.selectedObj.rotation.x = (STATE.hand.y * 5);
+        }
+
+        // Zoom (Two Hands)
+        if(results.multiHandLandmarks.length === 2) {
+            const h1 = results.multiHandLandmarks[0][9];
+            const h2 = results.multiHandLandmarks[1][9];
+            const d = Math.hypot(h1.x - h2.x, h1.y - h2.y);
+            
+            if(STATE.pinchStart === 0) {
+                STATE.pinchStart = d;
+                STATE.baseScale = currentModel ? currentModel.scale.x : 1;
+            } else {
+                const s = Math.max(0.1, Math.min(4, STATE.baseScale * (d/STATE.pinchStart)));
+                if(currentModel) currentModel.scale.set(s,s,s);
+            }
+        } else {
+            STATE.pinchStart = 0;
+        }
+    }
+
+    function updateCursorPosition() {
+        // Convert normalized 2D to 3D world pos
+        const ndcX = (1 - STATE.hand.x) * 2 - 1; // Mirror X
+        const ndcY = -(STATE.hand.y * 2 - 1);
+        
+        const vec = new THREE.Vector3(ndcX, ndcY, 0.5);
+        vec.unproject(camera);
+        const dir = vec.sub(camera.position).normalize();
+        const dist = 4.5;
+        const pos = camera.position.clone().add(dir.multiplyScalar(dist));
+        
+        cursorObj.position.copy(pos);
+        cursorObj.lookAt(camera.position);
+
+        // Rotate Cursor
+        cursorObj.children[1].rotation.z -= 0.05;
+        cursorObj.children[2].rotation.z += 0.05;
+    }
+
+    function checkIntersection() {
+        if(!currentModel) return;
+        // Raycast from camera to cursor
+        const ndcX = (1 - STATE.hand.x) * 2 - 1; 
+        const ndcY = -(STATE.hand.y * 2 - 1);
+        raycaster.setFromCamera({x:ndcX, y:ndcY}, camera);
+        
+        const intersects = raycaster.intersectObjects(currentModel.children);
+        
+        if(intersects.length > 0) {
+            cursorObj.children[0].material.color.setHex(0x00ff00);
+            cursorObj.scale.set(1.5, 1.5, 1.5); // Expand on hover
+            STATE.selectedObj = currentModel;
+            highlight(currentModel);
+        } else {
+            cursorObj.children[0].material.color.setHex(0x00f3ff);
+            cursorObj.scale.set(1, 1, 1);
+        }
+    }
+
+    function highlight(obj) {
+        if(!currentModel) return;
+        // Dim all
+        currentModel.traverse(c => {
+            if(c.isMesh && c.material.emissive) c.material.emissive.setHex(0x000000);
+        });
+        // Light active
+        if(obj) {
+             obj.traverse(c => {
+                if(c.isMesh && c.material.emissive) c.material.emissive.setHex(0x222222);
+            });
+        }
+    }
+
+    // ==========================================
+    // LOOP
+    // ==========================================
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const t = clock.getElapsedTime();
+
+        // 1. Heart Shader Update
+        if(heartUniforms) {
+            heartUniforms.time.value = t;
+        }
+
+        // 2. Jet Spinner
+        if(currentModel && currentModel.userData.spinner) {
+            currentModel.userData.spinner.rotation.z -= 0.15;
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    function onResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    window.setMode = (m) => {
+        const v = document.getElementById('video-feed');
+        const bS = document.getElementById('mode-studio');
+        const bA = document.getElementById('mode-ar');
+        if(m === 'ar') {
+            v.style.opacity = 1; scene.fog = null; scene.background = null;
+            bS.className = 'btn'; bA.className = 'btn active';
+        } else {
+            v.style.opacity = 0; scene.fog = new THREE.FogExp2(0x000000, 0.025);
+            scene.background = new THREE.Color(0x000000);
+            bA.className = 'btn'; bS.className = 'btn active';
+        }
+    }
+
+    // ==========================================
+    // STARTUP
+    // ==========================================
+    
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.65, minTrackingConfidence: 0.65 });
+    hands.onResults(onResults);
+
+    const cam = new Camera(document.getElementById('video-feed'), {
+        onFrame: async () => await hands.send({image: document.getElementById('video-feed')}),
+        width: 1280, height: 720
+    });
+    
+    cam.start().then(() => {
+        document.getElementById('loader').style.display = 'none';
+        init();
+    });
+
+</script>
+</body>
+</html>

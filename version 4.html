@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AeroForge: UE5 Fidelity</title>
+    
+    <!-- Core Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- Computer Vision -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        :root {
+            --bg: #050505;
+            --ue-grey: #1a1a1a;
+            --ue-blue: #0075FF;
+            --accent: #FF9900;
+            --text-main: #E0E0E0;
+        }
+
+        body {
+            margin: 0; overflow: hidden; background: var(--bg);
+            font-family: 'Segoe UI', 'Helvetica Neue', sans-serif;
+            color: var(--text-main); user-select: none;
+        }
+
+        /* 3D VIEWPORT */
+        #viewport {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 1; background: radial-gradient(circle at center, #1a202c 0%, #000000 100%);
+        }
+
+        /* VIDEO FEED (Processing Only - Hidden) */
+        #input_video {
+            position: fixed; top: 0; left: 0; opacity: 0; pointer-events: none;
+        }
+
+        /* UI OVERLAY */
+        #ui-layer {
+            position: fixed; inset: 0; z-index: 10; pointer-events: none;
+        }
+
+        /* SIDEBAR */
+        .sidebar {
+            position: absolute; left: 0; top: 0; bottom: 0; width: 320px;
+            background: rgba(10, 10, 12, 0.85);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+            pointer-events: auto; display: flex; flex-direction: column;
+        }
+
+        .brand {
+            padding: 25px; border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .brand h1 {
+            margin: 0; font-size: 1.8rem; font-weight: 800; letter-spacing: -1px;
+            background: linear-gradient(to right, #fff, #888);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .brand span {
+            font-size: 0.7rem; color: var(--accent); letter-spacing: 2px; text-transform: uppercase; font-weight: bold;
+        }
+
+        .menu {
+            flex: 1; padding: 20px; overflow-y: auto;
+        }
+
+        .menu-label {
+            font-size: 0.7rem; text-transform: uppercase; color: #666; font-weight: 700;
+            margin-top: 20px; margin-bottom: 10px; letter-spacing: 1px;
+        }
+
+        .part-btn {
+            width: 100%; padding: 15px; margin-bottom: 8px;
+            background: linear-gradient(90deg, rgba(255,255,255,0.03) 0%, transparent 100%);
+            border: 1px solid rgba(255,255,255,0.05); border-left: 3px solid transparent;
+            color: #aaa; cursor: pointer; text-align: left; transition: all 0.3s ease;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .part-btn:hover { background: rgba(255,255,255,0.08); color: white; padding-left: 20px; }
+        .part-btn.active { 
+            background: linear-gradient(90deg, rgba(0, 117, 255, 0.15) 0%, transparent 100%);
+            border-left-color: var(--ue-blue); color: white; 
+            text-shadow: 0 0 10px rgba(0, 117, 255, 0.5);
+        }
+        .part-btn .icon { font-size: 1.2rem; margin-right: 10px; }
+
+        /* GESTURE HUD */
+        .hud-bottom {
+            position: absolute; bottom: 30px; left: 350px; right: 30px;
+            display: flex; gap: 15px; justify-content: center;
+        }
+        .hud-card {
+            background: rgba(0,0,0,0.6); border: 1px solid #333;
+            padding: 10px 20px; border-radius: 4px; display: flex; align-items: center; gap: 10px;
+        }
+        .hud-key { font-weight: bold; color: var(--accent); font-size: 1.2rem; }
+        .hud-desc { font-size: 0.8rem; color: #ccc; text-transform: uppercase; }
+
+        /* LOADING */
+        #loader {
+            position: fixed; inset: 0; background: #000; z-index: 100;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .loader-bar {
+            width: 200px; height: 2px; background: #333; margin-top: 20px; position: relative; overflow: hidden;
+        }
+        .loader-fill {
+            position: absolute; top:0; left:0; height: 100%; width: 0%; background: var(--ue-blue);
+            animation: load 2s ease-out forwards;
+        }
+        @keyframes load { to { width: 100%; } }
+
+    </style>
+</head>
+<body>
+
+<div id="loader">
+    <h1 style="font-weight: 300; letter-spacing: 5px;">AERO<span style="font-weight: 800">FORGE</span></h1>
+    <div style="color: #666; font-size: 0.8rem;">INITIALIZING PHYSICS ENGINE...</div>
+    <div class="loader-bar"><div class="loader-fill"></div></div>
+</div>
+
+<video id="input_video" playsinline></video>
+<canvas id="viewport"></canvas>
+
+<div id="ui-layer">
+    <div class="sidebar">
+        <div class="brand">
+            <h1>AEROFORGE</h1>
+            <span>Unreal Fidelity</span>
+        </div>
+
+        <div class="menu">
+            <div class="menu-label">Propulsion Systems</div>
+            <button class="part-btn active" onclick="loadModel('turbine')">
+                <span><span class="icon">✈️</span> Turbofan Engine</span>
+            </button>
+            <button class="part-btn" onclick="loadModel('propeller')">
+                <span><span class="icon">🌪️</span> Turboprop</span>
+            </button>
+
+            <div class="menu-label">Aerodynamics</div>
+            <button class="part-btn" onclick="loadModel('wing')">
+                <span><span class="icon">🦅</span> Wing Assembly</span>
+            </button>
+            <button class="part-btn" onclick="loadModel('tail')">
+                <span><span class="icon">🦈</span> Vertical Stabilizer</span>
+            </button>
+
+            <div class="menu-label">Avionics & Gear</div>
+            <button class="part-btn" onclick="loadModel('cockpit')">
+                <span><span class="icon">🕹️</span> Flight Deck</span>
+            </button>
+            <button class="part-btn" onclick="loadModel('gear')">
+                <span><span class="icon">🛞</span> Landing Gear</span>
+            </button>
+        </div>
+    </div>
+
+    <div class="hud-bottom">
+        <div class="hud-card">
+            <span class="hud-key">☝️</span> <span class="hud-desc">Inspect</span>
+        </div>
+        <div class="hud-card">
+            <span class="hud-key">👌</span> <span class="hud-desc">Rotate</span>
+        </div>
+        <div class="hud-card">
+            <span class="hud-key">✌️</span> <span class="hud-desc">Explode View</span>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- UE5-STYLE RENDERING CONFIGURATION ---
+    const CONFIG = {
+        metalness: 0.9,
+        roughness: 0.2,
+        clearcoat: 1.0,
+        envMapIntensity: 1.5,
+        exposure: 1.2
+    };
+
+    const STATE = {
+        activeObj: null,
+        explodeFactor: 0,
+        hand: { x: 0.5, y: 0.5 },
+        gesture: 'IDLE'
+    };
+
+    // --- THREE.JS VARIABLES ---
+    let scene, camera, renderer, cursor;
+    let clock = new THREE.Clock();
+
+    // ==========================================
+    // 1. HIGH-FIDELITY RENDERER SETUP
+    // ==========================================
+    function init() {
+        const canvas = document.getElementById('viewport');
+        
+        // 1. Renderer with High-End Settings
+        renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.physicallyCorrectLights = true; // Essential for PBR
+        renderer.toneMapping = THREE.ACESFilmicToneMapping; // Cinema look
+        renderer.toneMappingExposure = CONFIG.exposure;
+        renderer.outputEncoding = THREE.sRGBEncoding;
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+        // 2. Scene & Camera
+        scene = new THREE.Scene();
+        // Fog for depth
+        scene.fog = new THREE.FogExp2(0x1a202c, 0.02);
+
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 100);
+        camera.position.set(4, 3, 6);
+        camera.lookAt(0,0,0);
+
+        // 3. Studio Lighting Rig (Unreal Style)
+        setupLights();
+        
+        // 4. Input Cursor
+        createHoloCursor();
+
+        // 5. Initial Load
+        loadModel('turbine');
+        animate();
+        
+        window.addEventListener('resize', onResize);
+    }
+
+    function setupLights() {
+        // Key Light (Warm Sun)
+        const keyLight = new THREE.DirectionalLight(0xffffff, 5);
+        keyLight.position.set(5, 10, 7);
+        keyLight.castShadow = true;
+        keyLight.shadow.mapSize.width = 2048; // High Res Shadows
+        keyLight.shadow.mapSize.height = 2048;
+        keyLight.shadow.bias = -0.0001;
+        scene.add(keyLight);
+
+        // Fill Light (Cool Skylight)
+        const fillLight = new THREE.DirectionalLight(0xb0c4de, 2);
+        fillLight.position.set(-5, 0, -5);
+        scene.add(fillLight);
+
+        // Rim Light (For that "Gamer/Tech" outline)
+        const rimLight = new THREE.SpotLight(0x0075FF, 10);
+        rimLight.position.set(-5, 5, 0);
+        rimLight.lookAt(0,0,0);
+        scene.add(rimLight);
+
+        // Ambient (Global Illumination fake)
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x000000, 0.2);
+        scene.add(hemiLight);
+    }
+
+    function createHoloCursor() {
+        const geo = new THREE.RingGeometry(0.04, 0.05, 32);
+        const mat = new THREE.MeshBasicMaterial({ color: 0x0075FF, transparent: true, opacity: 0.8 });
+        cursor = new THREE.Mesh(geo, mat);
+        scene.add(cursor);
+    }
+
+    // ==========================================
+    // 2. PROCEDURAL ASSET GENERATION (THE CORE)
+    // ==========================================
+    
+    // Helper for PBR Materials
+    function getPBRMaterial(color, roughness = 0.3) {
+        return new THREE.MeshPhysicalMaterial({
+            color: color,
+            metalness: CONFIG.metalness,
+            roughness: roughness,
+            clearcoat: CONFIG.clearcoat,
+            clearcoatRoughness: 0.1,
+            envMapIntensity: CONFIG.envMapIntensity
+        });
+    }
+
+    window.loadModel = (type) => {
+        if(STATE.activeObj) scene.remove(STATE.activeObj);
+        STATE.explodeFactor = 0;
+        
+        // UI Update
+        const buttons = document.querySelectorAll('.part-btn');
+        buttons.forEach(b => b.classList.remove('active'));
+
+        // Identify the button that triggered this or find it by type for initial load
+        let activeButton = null;
+        if (typeof event !== 'undefined' && event && event.currentTarget && event.currentTarget.classList.contains('part-btn')) {
+            activeButton = event.currentTarget;
+        } else {
+            // Fallback for initial load
+            buttons.forEach(btn => {
+                if (btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(`'${type}'`)) {
+                    activeButton = btn;
+                }
+            });
+        }
+        
+        if (activeButton) {
+            activeButton.classList.add('active');
+        }
+
+        const group = new THREE.Group();
+        const chrome = getPBRMaterial(0xffffff, 0.1);
+        const titanium = getPBRMaterial(0x888888, 0.4);
+        const darkMetal = getPBRMaterial(0x222222, 0.6);
+        const glass = new THREE.MeshPhysicalMaterial({
+            color: 0x88ccff, metalness: 0.1, roughness: 0.0, transmission: 0.9, transparent: true
+        });
+
+        if (type === 'turbine') {
+            // HIGH-BYPASS TURBOFAN
+            
+            // 1. Nacelle (Casing)
+            const cowlGeo = new THREE.CylinderGeometry(2, 1.8, 4, 64, 1, true);
+            const cowl = new THREE.Mesh(cowlGeo, getPBRMaterial(0xeeeeee, 0.5));
+            cowl.rotation.x = Math.PI/2;
+            cowl.material.side = THREE.DoubleSide;
+            group.add(cowl);
+
+            // 2. Fan Blades (Twisted)
+            const fanGroup = new THREE.Group();
+            for(let i=0; i<24; i++) {
+                // Complex blade shape
+                const shape = new THREE.Shape();
+                shape.moveTo(0,0);
+                shape.bezierCurveTo(0.2, 0.5, 0.4, 1.5, 0.1, 2.0);
+                shape.lineTo(-0.1, 2.0);
+                shape.bezierCurveTo(-0.2, 1.5, -0.1, 0.5, 0, 0);
+                
+                const extrudeSettings = { steps: 2, depth: 0.05, bevelEnabled: true, bevelThickness: 0.02, bevelSize: 0.01, bevelSegments: 2 };
+                const bladeGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+                const blade = new THREE.Mesh(bladeGeo, titanium);
+                
+                // Position and Twist
+                const pivot = new THREE.Group();
+                pivot.rotation.z = (i/24) * Math.PI * 2;
+                blade.rotation.y = 0.5; // Pitch
+                blade.position.y = 0.5; // Offset from center
+                pivot.add(blade);
+                fanGroup.add(pivot);
+            }
+            // Spinner Cone
+            const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1, 64), chrome);
+            spinner.rotation.x = Math.PI/2;
+            spinner.position.z = 0.2;
+            fanGroup.add(spinner);
+            
+            fanGroup.position.z = 2;
+            fanGroup.userData = { explodeDir: new THREE.Vector3(0,0,2) };
+            group.add(fanGroup);
+            group.userData.spinner = fanGroup; // Reference for animation
+
+            // 3. Core
+            const core = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 0.8, 3, 32), darkMetal);
+            core.rotation.x = Math.PI/2;
+            group.add(core);
+
+            // 4. Exhaust Cone
+            const cone = new THREE.Mesh(new THREE.ConeGeometry(0.6, 1.5, 32), titanium);
+            cone.rotation.x = -Math.PI/2;
+            cone.position.z = -2;
+            cone.userData = { explodeDir: new THREE.Vector3(0,0,-2) };
+            group.add(cone);
+        }
+
+        else if (type === 'wing') {
+            // AERODYNAMIC WING
+            
+            // Airfoil Shape
+            const shape = new THREE.Shape();
+            shape.moveTo(0,0);
+            shape.bezierCurveTo(1, 0.2, 3, 0.1, 5, 0); // Top curve
+            shape.bezierCurveTo(3, -0.2, 1, -0.1, 0, 0); // Bottom curve
+
+            const geo = new THREE.ExtrudeGeometry(shape, { steps: 10, depth: 10, bevelEnabled: false });
+            const wing = new THREE.Mesh(geo, getPBRMaterial(0xdddddd));
+            wing.rotation.y = -Math.PI/2;
+            group.add(wing);
+
+            // Flaps (Separate for explosion)
+            const flap = new THREE.Mesh(new THREE.BoxGeometry(2, 0.1, 8), titanium);
+            flap.position.set(1.5, -0.1, -5);
+            flap.userData = { explodeDir: new THREE.Vector3(0.5, -0.2, 0) };
+            group.add(flap);
+            
+            // Winglet
+            const winglet = new THREE.Mesh(new THREE.BoxGeometry(2, 1.5, 0.1), chrome);
+            winglet.position.set(0, 0.5, -10);
+            winglet.rotation.x = 0.5;
+            group.add(winglet);
+        }
+
+        else if (type === 'gear') {
+            // LANDING GEAR
+            
+            // Strut
+            const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 3, 32), chrome);
+            group.add(strut);
+
+            // Axle
+            const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 2.5, 32), darkMetal);
+            axle.rotation.z = Math.PI/2;
+            axle.position.y = -1.5;
+            group.add(axle);
+
+            // Wheels
+            const tireGeo = new THREE.TorusGeometry(1, 0.6, 32, 64);
+            const rubber = new THREE.MeshPhysicalMaterial({ color: 0x111111, roughness: 0.9, metalness: 0.1 });
+            
+            const w1 = new THREE.Mesh(tireGeo, rubber);
+            w1.rotation.y = Math.PI/2;
+            w1.position.set(1, -1.5, 0);
+            w1.userData = { explodeDir: new THREE.Vector3(1,0,0) };
+            
+            const w2 = new THREE.Mesh(tireGeo, rubber);
+            w2.rotation.y = Math.PI/2;
+            w2.position.set(-1, -1.5, 0);
+            w2.userData = { explodeDir: new THREE.Vector3(-1,0,0) };
+            
+            // Rims
+            const rimGeo = new THREE.CylinderGeometry(0.6, 0.6, 0.5, 32);
+            const r1 = new THREE.Mesh(rimGeo, chrome); r1.rotation.z=Math.PI/2; r1.position.copy(w1.position);
+            const r2 = new THREE.Mesh(rimGeo, chrome); r2.rotation.z=Math.PI/2; r2.position.copy(w2.position);
+
+            const wheelGroup1 = new THREE.Group(); wheelGroup1.add(w1, r1);
+            const wheelGroup2 = new THREE.Group(); wheelGroup2.add(w2, r2);
+            
+            group.add(strut, axle, wheelGroup1, wheelGroup2);
+        }
+
+        else if (type === 'cockpit') {
+            // FLIGHT DECK
+            
+            // Nose Cone
+            const noseGeo = new THREE.SphereGeometry(2, 64, 64, 0, Math.PI * 2, 0, Math.PI/2);
+            const nose = new THREE.Mesh(noseGeo, getPBRMaterial(0xffffff));
+            nose.scale.set(1, 1, 2.5);
+            group.add(nose);
+
+            // Glass Canopy
+            const glassGeo = new THREE.SphereGeometry(1.4, 64, 64, 0, Math.PI * 2, 0, Math.PI/2.5);
+            const canopy = new THREE.Mesh(glassGeo, glass);
+            canopy.scale.set(0.95, 0.8, 1.8);
+            canopy.position.set(0, 0.8, 0.5);
+            canopy.userData = { explodeDir: new THREE.Vector3(0, 1, 0) };
+            group.add(canopy);
+
+            // Seats (Visible inside)
+            const seatGeo = new THREE.BoxGeometry(0.6, 1.2, 0.8);
+            const seat1 = new THREE.Mesh(seatGeo, darkMetal); seat1.position.set(-0.5, 0.2, 0.5);
+            const seat2 = new THREE.Mesh(seatGeo, darkMetal); seat2.position.set(0.5, 0.2, 0.5);
+            group.add(seat1, seat2);
+        }
+
+        else {
+            // Default Cube (Fallback)
+            const box = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), titanium);
+            group.add(box);
+        }
+
+        STATE.activeObj = group;
+        scene.add(group);
+        
+        // Intro Animation
+        group.scale.set(0,0,0);
+        let scale = 0;
+        const intro = setInterval(() => {
+            scale += 0.05;
+            group.scale.set(scale, scale, scale);
+            if(scale >= 1) clearInterval(intro);
+        }, 16);
+    };
+
+    // ==========================================
+    // 3. HAND TRACKING ENGINE
+    // ==========================================
+
+    function onResults(results) {
+        if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+            cursor.visible = false; return;
+        }
+        cursor.visible = true;
+
+        const lm = results.multiHandLandmarks[0];
+        const rawX = lm[8].x; const rawY = lm[8].y;
+
+        // Smoothing
+        STATE.hand.x += (rawX - STATE.hand.x) * 0.15;
+        STATE.hand.y += (rawY - STATE.hand.y) * 0.15;
+
+        // 3D Cursor Update
+        const vec = new THREE.Vector3(
+            (1 - STATE.hand.x) * 2 - 1,
+            -(STATE.hand.y * 2 - 1),
+            0.5
+        );
+        vec.unproject(camera);
+        const dir = vec.sub(camera.position).normalize();
+        const pos = camera.position.clone().add(dir.multiplyScalar(5));
+        cursor.position.copy(pos);
+        cursor.lookAt(camera.position);
+
+        // Gesture Recognition
+        const pinch = Math.hypot(lm[8].x - lm[4].x, lm[8].y - lm[4].y) < 0.05;
+        const indexUp = lm[8].y < lm[6].y;
+        const middleUp = lm[12].y < lm[10].y;
+        const ringDown = lm[16].y > lm[14].y;
+
+        let gesture = 'IDLE';
+        if (pinch) gesture = 'PINCH';
+        else if (indexUp && middleUp && ringDown) gesture = 'PEACE';
+        else if (indexUp && ringDown) gesture = 'POINT';
+
+        STATE.gesture = gesture;
+
+        // Logic
+        if (STATE.activeObj) {
+            if (gesture === 'PINCH') {
+                // Rotate
+                STATE.activeObj.rotation.y = (STATE.hand.x - 0.5) * 4;
+                STATE.activeObj.rotation.x = (STATE.hand.y - 0.5) * 4;
+                cursor.scale.set(1.5, 1.5, 1.5);
+                cursor.material.color.setHex(0x00ff00);
+            } 
+            else if (gesture === 'PEACE') {
+                // Explode
+                STATE.explodeFactor = Math.min(STATE.explodeFactor + 0.02, 1.5);
+                explodeView();
+                cursor.material.color.setHex(0xFF9900);
+            }
+            else {
+                // Return to normal
+                STATE.explodeFactor = Math.max(STATE.explodeFactor - 0.05, 0);
+                explodeView();
+                cursor.scale.set(1, 1, 1);
+                cursor.material.color.setHex(0x0075FF);
+            }
+        }
+    }
+
+    function explodeView() {
+        if(!STATE.activeObj) return;
+        STATE.activeObj.traverse(child => {
+            if(child.userData.explodeDir) {
+                const target = child.userData.explodeDir.clone().multiplyScalar(STATE.explodeFactor);
+                child.position.lerp(target, 0.1);
+            }
+        });
+    }
+
+    // ==========================================
+    // 4. MAIN LOOP
+    // ==========================================
+
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        // Spin Turbine if exists
+        if(STATE.activeObj && STATE.activeObj.userData.spinner) {
+            STATE.activeObj.userData.spinner.rotation.z -= 0.1; // Idle RPM
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    function onResize() {
+        camera.aspect = window.innerWidth/window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // Init Camera
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6});
+    hands.onResults(onResults);
+
+    const cam = new Camera(document.getElementById('input_video'), {
+        onFrame: async () => await hands.send({image: document.getElementById('input_video')}),
+        width: 1280, height: 720
+    });
+    
+    cam.start().then(() => {
+        document.getElementById('loader').style.display = 'none';
+        init();
+    });
+
+</script>
+</body>
+</html>
